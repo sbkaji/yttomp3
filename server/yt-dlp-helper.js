@@ -253,7 +253,62 @@ async function ensureFFmpeg() {
 }
 
 /**
- * Fetch video metadata using yt-dlp JSON output
+ * Resolves cookies, proxies, and extractor args to bypass YouTube bot detection
+ */
+function getExtraYtDlpArgs(overrideClient = null) {
+    const extraArgs = [];
+
+    // Client extractor args: default to android,ios,web (android avoids web bot checks on VPS IPs)
+    const client = overrideClient || process.env.YTDLP_CLIENT || 'android,ios,web';
+    extraArgs.push('--extractor-args', `youtube:player_client=${client}`);
+
+    // Optional po_token if configured via env
+    if (process.env.YTDLP_PO_TOKEN) {
+        extraArgs.push('--extractor-args', `youtube:po_token=${process.env.YTDLP_PO_TOKEN.trim()}`);
+    }
+
+    // 1. Cookies support: YTDLP_COOKIES env var (paste raw cookies in Coolify), COOKIES_PATH, or local cookies.txt
+    const rawCookies = process.env.YTDLP_COOKIES || process.env.COOKIES_CONTENT;
+    if (rawCookies && rawCookies.trim().length > 0) {
+        try {
+            const cookiesFilePath = path.join(os.tmpdir(), 'ytmp3_cookies.txt');
+            fs.writeFileSync(cookiesFilePath, rawCookies.trim(), { mode: 0o600 });
+            extraArgs.push('--cookies', cookiesFilePath);
+        } catch (e) {
+            console.warn('[yt-dlp Cookies] Could not write cookies env string:', e.message);
+        }
+    } else if (process.env.COOKIES_PATH && fs.existsSync(process.env.COOKIES_PATH)) {
+        extraArgs.push('--cookies', process.env.COOKIES_PATH);
+    } else {
+        const candidateFiles = [
+            path.join(__dirname, 'cookies.txt'),
+            path.join(__dirname, 'data', 'cookies.txt'),
+            path.join(process.cwd(), 'cookies.txt'),
+            path.join(TEMP_DIR, 'cookies.txt'),
+            '/tmp/cookies.txt'
+        ];
+        for (const candidate of candidateFiles) {
+            try {
+                if (fs.existsSync(candidate) && fs.statSync(candidate).size > 0) {
+                    console.log(`[yt-dlp Cookies] Using detected cookies file: ${candidate}`);
+                    extraArgs.push('--cookies', candidate);
+                    break;
+                }
+            } catch (e) {}
+        }
+    }
+
+    // 2. Proxy support: YTDLP_PROXY or HTTP_PROXY or HTTPS_PROXY
+    const proxyUrl = process.env.YTDLP_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
+    if (proxyUrl && proxyUrl.trim().length > 0) {
+        extraArgs.push('--proxy', proxyUrl.trim());
+    }
+
+    return extraArgs;
+}
+
+/**
+ * Fetch video metadata using yt-dlp JSON output (with multi-client anti-bot fallback)
  */
 async function getVideoInfo(videoUrl) {
     await downloadYtDlp();
@@ -261,36 +316,54 @@ async function getVideoInfo(videoUrl) {
     // Clean playlist URL parameters to target exact video
     const cleanUrl = videoUrl.split('&list=')[0].split('&start_radio=')[0];
 
-    return new Promise((resolve, reject) => {
-        const args = [
-            cleanUrl,
-            '--dump-json',
-            '--no-warnings',
-            '--no-playlist',
-            '--extractor-args', 'youtube:player_client=mweb,android,ios'
-        ];
+    const runInfoDump = (clientOverride = null) => {
+        return new Promise((resolve, reject) => {
+            const args = [
+                cleanUrl,
+                '--dump-json',
+                '--no-warnings',
+                '--no-playlist',
+                ...getExtraYtDlpArgs(clientOverride)
+            ];
 
-        execFile(YTDLP_PATH, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
-            if (err) {
-                console.error('[yt-dlp Info Error]:', stderr || err.message);
-                return reject(new Error(`Failed to fetch video info: ${stderr || err.message}`));
-            }
+            execFile(YTDLP_PATH, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+                if (err) {
+                    return reject({ err, stderr: stderr || err.message });
+                }
 
-            try {
-                const info = JSON.parse(stdout);
-                resolve({
-                    id: info.id,
-                    title: info.title || 'YouTube Audio',
-                    channel: info.uploader || info.channel || 'Unknown Artist',
-                    duration: parseInt(info.duration || 0),
-                    thumbnail: info.thumbnail || (info.thumbnails && info.thumbnails.length > 0 ? info.thumbnails[info.thumbnails.length - 1].url : null),
-                    url: info.webpage_url || cleanUrl
-                });
-            } catch (pErr) {
-                reject(new Error('Failed to parse yt-dlp metadata JSON output'));
-            }
+                try {
+                    const info = JSON.parse(stdout);
+                    resolve({
+                        id: info.id,
+                        title: info.title || 'YouTube Audio',
+                        channel: info.uploader || info.channel || 'Unknown Artist',
+                        duration: parseInt(info.duration || 0),
+                        thumbnail: info.thumbnail || (info.thumbnails && info.thumbnails.length > 0 ? info.thumbnails[info.thumbnails.length - 1].url : null),
+                        url: info.webpage_url || cleanUrl
+                    });
+                } catch (pErr) {
+                    reject({ err: pErr, stderr: 'Failed to parse yt-dlp metadata JSON output' });
+                }
+            });
         });
-    });
+    };
+
+    try {
+        return await runInfoDump();
+    } catch (firstErr) {
+        console.warn(`[yt-dlp Info] Primary client failed (${(firstErr.stderr || '').slice(0, 150)}). Retrying with android client...`);
+        try {
+            return await runInfoDump('android');
+        } catch (secondErr) {
+            console.warn(`[yt-dlp Info] Android client failed. Retrying with ios client...`);
+            try {
+                return await runInfoDump('ios');
+            } catch (thirdErr) {
+                console.error('[yt-dlp Info Error]:', thirdErr.stderr || thirdErr.err);
+                throw new Error(`Failed to fetch video info: ${thirdErr.stderr || thirdErr.err.message}`);
+            }
+        }
+    }
 }
 
 /**
@@ -345,11 +418,12 @@ async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
         '--no-live-from-start',
         '--max-filesize', maxFilesize,
         '--ffmpeg-location', ffmpegLocation,
-        '--extractor-args', 'youtube:player_client=mweb,android,ios',
         '--output', path.join(outputDir, `${sanitizedTitle}.%(ext)s`),
         '--no-playlist',
-        '--no-warnings'
+        '--no-warnings',
+        ...getExtraYtDlpArgs()
     ];
+
 
     // Build env with ffmpeg on PATH (Linux uses : separator, Windows uses ;)
     const pathSep = process.platform === 'win32' ? ';' : ':';
