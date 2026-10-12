@@ -7,10 +7,10 @@ cmds = [
 ]
 
 [phases.install]
-cmds = ["cd server && (npm ci --omit=dev || npm install --omit=dev)"]
+cmds = ["npm ci --omit=dev || npm install --omit=dev"]
 
 [phases.build]
 cmds = []
 
 [start]
-cmd = "cd server && node server.js"
+cmd = "node server/server.js"
