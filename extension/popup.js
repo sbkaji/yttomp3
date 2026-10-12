@@ -351,15 +351,21 @@ function initUIEventListeners() {
         document.getElementById('url-input').value = '';
 
         try {
+            // Retrieve fresh client YouTube cookies from background worker
+            const cookieRes = await new Promise(res => {
+                chrome.runtime.sendMessage({ action: 'GET_YOUTUBE_COOKIES' }, r => res(r || {}));
+            });
+            const cookies = cookieRes.cookies || '';
+
             if (urls.length === 1) {
                 await apiFetch('/api/download', {
                     method: 'POST',
-                    body: JSON.stringify({ url: urls[0], bitrate: currentBitrate })
+                    body: JSON.stringify({ url: urls[0], bitrate: currentBitrate, cookies })
                 });
             } else {
                 await apiFetch('/api/download-batch', {
                     method: 'POST',
-                    body: JSON.stringify({ urls, bitrate: currentBitrate })
+                    body: JSON.stringify({ urls, bitrate: currentBitrate, cookies })
                 });
             }
             chrome.runtime.sendMessage({ action: 'START_POLLING' });
@@ -367,6 +373,7 @@ function initUIEventListeners() {
         } catch (err) {
             console.error('Queue add failed:', err.message);
         }
+
     });
 
     // Clear completed button

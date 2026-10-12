@@ -255,7 +255,7 @@ async function ensureFFmpeg() {
 /**
  * Resolves cookies, proxies, and extractor args to bypass YouTube bot detection
  */
-function getExtraYtDlpArgs(overrideClient = null) {
+function getExtraYtDlpArgs(overrideClient = null, customCookies = null) {
     const extraArgs = [];
 
     // Client extractor args: default to android,ios,web (android avoids web bot checks on VPS IPs)
@@ -267,22 +267,45 @@ function getExtraYtDlpArgs(overrideClient = null) {
         extraArgs.push('--extractor-args', `youtube:po_token=${process.env.YTDLP_PO_TOKEN.trim()}`);
     }
 
-    // 1. Cookies support: YTDLP_COOKIES env var (paste raw cookies in Coolify), COOKIES_PATH, or local cookies.txt
+    // 1. Cookies support:
+    // A. Top Priority: Direct cookies passed from browser extension request
+    if (customCookies && typeof customCookies === 'string' && customCookies.trim().length > 0) {
+        try {
+            const clientCookiesPath = path.join(os.tmpdir(), `ytmp3_client_cookies_${Date.now()}_${Math.random().toString(36).substr(2, 5)}.txt`);
+            fs.writeFileSync(clientCookiesPath, customCookies.trim(), { mode: 0o600 });
+            extraArgs.push('--cookies', clientCookiesPath);
+
+            // Also cache on server for subsequent background metadata queries
+            const cachePath = path.join(__dirname, 'data', 'cookies.txt');
+            try {
+                if (!fs.existsSync(path.dirname(cachePath))) fs.mkdirSync(path.dirname(cachePath), { recursive: true });
+                fs.writeFileSync(cachePath, customCookies.trim(), { mode: 0o600 });
+            } catch (e) {}
+
+            return extraArgs;
+        } catch (e) {
+            console.warn('[yt-dlp Cookies] Could not write client cookies:', e.message);
+        }
+    }
+
+    // B. Secondary: YTDLP_COOKIES env var (paste raw cookies in Coolify)
     const rawCookies = process.env.YTDLP_COOKIES || process.env.COOKIES_CONTENT;
     if (rawCookies && rawCookies.trim().length > 0) {
         try {
             const cookiesFilePath = path.join(os.tmpdir(), 'ytmp3_cookies.txt');
             fs.writeFileSync(cookiesFilePath, rawCookies.trim(), { mode: 0o600 });
             extraArgs.push('--cookies', cookiesFilePath);
+            return extraArgs;
         } catch (e) {
             console.warn('[yt-dlp Cookies] Could not write cookies env string:', e.message);
         }
     } else if (process.env.COOKIES_PATH && fs.existsSync(process.env.COOKIES_PATH)) {
         extraArgs.push('--cookies', process.env.COOKIES_PATH);
+        return extraArgs;
     } else {
         const candidateFiles = [
-            path.join(__dirname, 'cookies.txt'),
             path.join(__dirname, 'data', 'cookies.txt'),
+            path.join(__dirname, 'cookies.txt'),
             path.join(process.cwd(), 'cookies.txt'),
             path.join(TEMP_DIR, 'cookies.txt'),
             '/tmp/cookies.txt'
@@ -310,7 +333,7 @@ function getExtraYtDlpArgs(overrideClient = null) {
 /**
  * Fetch video metadata using yt-dlp JSON output (with multi-client anti-bot fallback)
  */
-async function getVideoInfo(videoUrl) {
+async function getVideoInfo(videoUrl, customCookies = null) {
     await downloadYtDlp();
 
     // Clean playlist URL parameters to target exact video
@@ -323,7 +346,7 @@ async function getVideoInfo(videoUrl) {
                 '--dump-json',
                 '--no-warnings',
                 '--no-playlist',
-                ...getExtraYtDlpArgs(clientOverride)
+                ...getExtraYtDlpArgs(clientOverride, customCookies)
             ];
 
             execFile(YTDLP_PATH, args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
@@ -370,7 +393,7 @@ async function getVideoInfo(videoUrl) {
  * Download & Convert YouTube Video to Pure MP3 using yt-dlp + FFmpeg
  * Files are saved to a TEMP directory on the server.
  */
-async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
+async function convertToMp3({ url, bitrate = '320k', outputDir, cookies = null, onProgress }) {
     await downloadYtDlp();
     await ensureFFmpeg();
 
@@ -389,7 +412,7 @@ async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
     console.log(`[yt-dlp Audio Engine] Fetching metadata for: ${cleanUrl}`);
     if (onProgress) onProgress({ stage: 'fetching_meta', percent: 5 });
 
-    const meta = await getVideoInfo(cleanUrl);
+    const meta = await getVideoInfo(cleanUrl, cookies);
     const sanitizedTitle = sanitize(meta.title) || `yt_audio_${meta.id}`;
     const outputFilename = `${sanitizedTitle}.mp3`;
     const outputPath = path.join(outputDir, outputFilename);
@@ -421,8 +444,9 @@ async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
         '--output', path.join(outputDir, `${sanitizedTitle}.%(ext)s`),
         '--no-playlist',
         '--no-warnings',
-        ...getExtraYtDlpArgs()
+        ...getExtraYtDlpArgs(null, cookies)
     ];
+
 
 
     // Build env with ffmpeg on PATH (Linux uses : separator, Windows uses ;)

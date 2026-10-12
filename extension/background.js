@@ -102,6 +102,37 @@ async function apiFetch(endpoint, options = {}) {
     }
 }
 
+/**
+ * Extract YouTube session cookies from Chrome in Netscape format
+ * to pass to yt-dlp to bypass bot detection on cloud servers
+ */
+async function getYouTubeCookiesNetscape() {
+    try {
+        if (!chrome.cookies) return '';
+        const cookies = await chrome.cookies.getAll({ domain: '.youtube.com' });
+        if (!cookies || cookies.length === 0) return '';
+
+        const lines = [
+            '# Netscape HTTP Cookie File',
+            '# Exported automatically by YouTube to MP3 Pro Extension'
+        ];
+
+        for (const c of cookies) {
+            const domain = c.domain.startsWith('.') ? c.domain : `.${c.domain}`;
+            const flag = domain.startsWith('.') ? 'TRUE' : 'FALSE';
+            const path = c.path || '/';
+            const secure = c.secure ? 'TRUE' : 'FALSE';
+            const expiration = c.expirationDate ? Math.round(c.expirationDate) : Math.round(Date.now() / 1000) + 86400 * 30;
+            lines.push(`${domain}\t${flag}\t${path}\t${secure}\t${expiration}\t${c.name}\t${c.value}`);
+        }
+
+        return lines.join('\n');
+    } catch (e) {
+        console.warn('[BG] Failed to extract YouTube cookies:', e);
+        return '';
+    }
+}
+
 // Initialize default settings on install or update
 chrome.runtime.onInstalled.addListener(async () => {
     chrome.storage.local.get(['serverUrl', 'apiKey', 'autoDownload', 'bitrate'], (res) => {
@@ -336,11 +367,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         return true;
     }
 
+    if (request.action === 'GET_YOUTUBE_COOKIES') {
+        getYouTubeCookiesNetscape().then(cookies => sendResponse({ cookies }));
+        return true;
+    }
+
     if (request.action === 'DOWNLOAD_VIDEO') {
         const { url, bitrate = '320k', videoId } = request;
-        apiFetch('/api/download', {
-            method: 'POST',
-            body: JSON.stringify({ url, bitrate, videoId })
+        getYouTubeCookiesNetscape().then(cookies => {
+            return apiFetch('/api/download', {
+                method: 'POST',
+                body: JSON.stringify({ url, bitrate, videoId, cookies })
+            });
         })
             .then(data => {
                 startFastPolling();

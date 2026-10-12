@@ -58,12 +58,13 @@ class DownloadQueue {
     }
 
     /**
-     * Add item to queue with client metadata (Who, Where, When, What)
+     * Add item to queue with client metadata (Who, Where, When, What) and client cookies
      */
-    async add({ url, bitrate = '320k', clientMeta = {} }) {
+    async add({ url, bitrate = '320k', clientMeta = {}, cookies = null }) {
         // Prevent duplicate pending or downloading items
         const existing = this.queue.find(item => item.url === url && (item.status === 'pending' || item.status === 'downloading' || item.status === 'decoding_ffmpeg'));
         if (existing) {
+            if (cookies && !existing.cookies) existing.cookies = cookies;
             return existing;
         }
 
@@ -90,6 +91,7 @@ class DownloadQueue {
             videoId,
             url,
             bitrate,
+            cookies: cookies || null,
             title: 'Fetching details...',
             channel: 'YouTube',
             thumbnail: null,
@@ -125,11 +127,11 @@ class DownloadQueue {
     /**
      * Add multiple URLs to queue
      */
-    async addBatch(urls, bitrate = '320k', clientMeta = {}) {
+    async addBatch(urls, bitrate = '320k', clientMeta = {}, cookies = null) {
         const added = [];
         for (const url of urls) {
             if (url && url.trim()) {
-                const item = await this.add({ url: url.trim(), bitrate, clientMeta });
+                const item = await this.add({ url: url.trim(), bitrate, clientMeta, cookies });
                 added.push(item);
             }
         }
@@ -138,7 +140,7 @@ class DownloadQueue {
 
     async fetchMeta(item) {
         try {
-            const meta = await getVideoInfo(item.url);
+            const meta = await getVideoInfo(item.url, item.cookies);
             item.title = meta.title;
             item.channel = meta.channel;
             item.thumbnail = meta.thumbnail;
@@ -173,6 +175,7 @@ class DownloadQueue {
             const result = await convertToMp3({
                 url: nextItem.url,
                 bitrate: nextItem.bitrate,
+                cookies: nextItem.cookies,
                 onProgress: ({ stage, percent }) => {
                     nextItem.stage = stage;
                     nextItem.progress = percent;

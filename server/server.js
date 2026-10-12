@@ -393,7 +393,7 @@ app.get('/api/info', async (req, res) => {
  * Queue single video for download
  */
 app.post('/api/download', async (req, res) => {
-    const { url, bitrate } = req.body;
+    const { url, bitrate, cookies } = req.body;
 
     if (!url) {
         return res.status(400).json({ error: 'Missing YouTube video URL.' });
@@ -405,7 +405,7 @@ app.post('/api/download', async (req, res) => {
 
     try {
         const clientMeta = extractClientMeta(req);
-        const item = await queue.add({ url: url.trim(), bitrate: sanitizeBitrate(bitrate), clientMeta });
+        const item = await queue.add({ url: url.trim(), bitrate: sanitizeBitrate(bitrate), cookies, clientMeta });
         const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
         const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
         const baseUrl = `${protocol}://${host}`;
@@ -420,7 +420,7 @@ app.post('/api/download', async (req, res) => {
  * Queue batch videos for download
  */
 app.post('/api/download-batch', async (req, res) => {
-    const { urls, bitrate } = req.body;
+    const { urls, bitrate, cookies } = req.body;
 
     if (!urls || !Array.isArray(urls)) {
         return res.status(400).json({ error: 'urls must be an array of YouTube URLs.' });
@@ -440,7 +440,7 @@ app.post('/api/download-batch', async (req, res) => {
 
     try {
         const clientMeta = extractClientMeta(req);
-        const items = await queue.addBatch(validUrls.map(u => u.trim()), sanitizeBitrate(bitrate), clientMeta);
+        const items = await queue.addBatch(validUrls.map(u => u.trim()), sanitizeBitrate(bitrate), clientMeta, cookies);
         const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
         const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
         const baseUrl = `${protocol}://${host}`;
