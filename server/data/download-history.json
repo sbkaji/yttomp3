@@ -18,7 +18,7 @@
     "convertedAt": "2026-10-12T09:13:49.564Z",
     "downloadedAt": "2026-10-12T09:13:49.943Z",
     "conversionDurationMs": 24936,
-    "tempCleaned": false,
+    "tempCleaned": true,
     "error": null,
     "downloadClientIp": "127.0.0.1"
   },

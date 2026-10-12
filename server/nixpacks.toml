@@ -1,0 +1,16 @@
+# Nixpacks configuration for Coolify (when Base Directory is /server)
+[phases.setup]
+nixPkgs = ["nodejs_20", "ffmpeg", "python3", "curl"]
+cmds = [
+    "curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && chmod a+rx /usr/local/bin/yt-dlp",
+    "mkdir -p /tmp/ytmp3_temp && chmod 777 /tmp/ytmp3_temp"
+]
+
+[phases.install]
+cmds = ["npm ci --omit=dev || npm install --omit=dev"]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "node server.js"

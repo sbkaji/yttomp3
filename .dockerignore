@@ -1,0 +1,8 @@
+node_modules
+server/node_modules
+extension
+.git
+.gitignore
+server/bin
+server/logs
+*.md
