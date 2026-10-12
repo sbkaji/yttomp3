@@ -1,0 +1,173 @@
+/* YouTube MP3 Injected Button Styles */
+#yt-mp3-btn-container {
+    display: inline-flex !important;
+    align-items: center !important;
+    vertical-align: middle !important;
+    z-index: 9999 !important;
+}
+
+.yt-mp3-download-btn {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%) !important;
+    color: #ffffff !important;
+    font-family: "Roboto", "Segoe UI", sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    padding: 0 14px !important;
+    height: 36px !important;
+    border-radius: 18px !important;
+    border: none !important;
+    cursor: pointer !important;
+    box-shadow: 0 3px 12px rgba(99, 102, 241, 0.4) !important;
+    transition: all 0.2s ease !important;
+    user-select: none !important;
+    outline: none !important;
+}
+
+.yt-mp3-download-btn:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 5px 16px rgba(168, 85, 247, 0.5) !important;
+    background: linear-gradient(135deg, #4f46e5 0%, #9333ea 100%) !important;
+}
+
+.yt-mp3-download-btn:active {
+    transform: translateY(0) !important;
+}
+
+.yt-mp3-download-btn svg {
+    fill: currentColor !important;
+    flex-shrink: 0 !important;
+}
+
+.yt-mp3-download-btn.loading {
+    opacity: 0.85 !important;
+    pointer-events: none !important;
+}
+
+.yt-mp3-spinner {
+    animation: yt-mp3-spin 0.9s linear infinite !important;
+}
+
+@keyframes yt-mp3-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+/* Injected Toast Notification */
+.yt-mp3-toast {
+    position: fixed !important;
+    bottom: 24px !important;
+    right: 24px !important;
+    background: rgba(15, 23, 42, 0.94) !important;
+    backdrop-filter: blur(12px) !important;
+    border: 1px solid rgba(99, 102, 241, 0.4) !important;
+    color: #f8fafc !important;
+    padding: 12px 18px !important;
+    border-radius: 12px !important;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+    display: flex !important;
+    align-items: center !important;
+    gap: 10px !important;
+    font-family: "Segoe UI", sans-serif !important;
+    font-size: 13px !important;
+    font-weight: 500 !important;
+    z-index: 999999 !important;
+    animation: yt-mp3-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+}
+
+@keyframes yt-mp3-slide-in {
+    from {
+        transform: translateY(60px);
+        opacity: 0;
+    }
+    to {
+        transform: translateY(0);
+        opacity: 1;
+    }
+}
+
+/* Hover Download MP3 Button on Video Cards / Thumbnails */
+ytd-thumbnail,
+a#thumbnail,
+.ytd-thumbnail,
+ytd-compact-video-renderer,
+ytd-grid-video-renderer,
+ytd-reel-item-renderer,
+ytd-rich-grid-slim-media {
+    position: relative !important;
+}
+
+.yt-mp3-hover-btn {
+    position: absolute !important;
+    top: 8px !important;
+    right: 8px !important;
+    z-index: 9999 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 5px !important;
+    background: rgba(15, 23, 42, 0.88) !important;
+    backdrop-filter: blur(8px) !important;
+    color: #ffffff !important;
+    font-family: "Roboto", "Segoe UI", sans-serif !important;
+    font-size: 11px !important;
+    font-weight: 700 !important;
+    letter-spacing: 0.3px !important;
+    padding: 4px 10px !important;
+    height: 28px !important;
+    border-radius: 14px !important;
+    border: 1px solid rgba(168, 85, 247, 0.6) !important;
+    cursor: pointer !important;
+    box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4) !important;
+    opacity: 0 !important;
+    transform: scale(0.85) !important;
+    transition: opacity 0.25s ease, transform 0.25s ease, background 0.2s ease, box-shadow 0.2s ease !important;
+    user-select: none !important;
+    pointer-events: none !important;
+}
+
+/* Show button when hovering thumbnail or when loading/queued */
+ytd-thumbnail:hover .yt-mp3-hover-btn,
+a#thumbnail:hover .yt-mp3-hover-btn,
+.ytd-thumbnail:hover .yt-mp3-hover-btn,
+ytd-compact-video-renderer:hover .yt-mp3-hover-btn,
+ytd-grid-video-renderer:hover .yt-mp3-hover-btn,
+ytd-reel-item-renderer:hover .yt-mp3-hover-btn,
+ytd-rich-grid-slim-media:hover .yt-mp3-hover-btn,
+.yt-mp3-hover-btn.loading,
+.yt-mp3-hover-btn.queued {
+    opacity: 1 !important;
+    transform: scale(1) !important;
+    pointer-events: auto !important;
+}
+
+.yt-mp3-hover-btn:hover {
+    background: linear-gradient(135deg, #6366f1 0%, #a855f7 100%) !important;
+    border-color: transparent !important;
+    box-shadow: 0 6px 18px rgba(168, 85, 247, 0.6) !important;
+    transform: scale(1.05) !important;
+}
+
+.yt-mp3-hover-btn:active {
+    transform: scale(0.98) !important;
+}
+
+.yt-mp3-hover-btn svg {
+    fill: currentColor !important;
+    flex-shrink: 0 !important;
+}
+
+.yt-mp3-hover-btn.loading {
+    opacity: 0.9 !important;
+    pointer-events: none !important;
+    background: rgba(15, 23, 42, 0.95) !important;
+}
+
+.yt-mp3-hover-btn.queued {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    border-color: transparent !important;
+}
+

@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>YouTube MP3 Downloader & Queue</title>
+    <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Header -->
+        <header class="app-header">
+            <div class="brand">
+                <div class="logo-icon">🎧</div>
+                <div>
+                    <h1>YT to MP3 Engine</h1>
+                    <span class="sub-title">FFmpeg Local Audio Decoder</span>
+                </div>
+            </div>
+            <div id="server-status" class="status-badge offline">
+                <span class="status-dot"></span>
+                <span id="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <!-- Main Controls -->
+        <section class="control-panel">
+            <div class="panel-row">
+                <label>Audio Bitrate Quality:</label>
+                <div class="bitrate-selector">
+                    <button class="btn-bitrate active" data-bitrate="320k">320k (HQ)</button>
+                    <button class="btn-bitrate" data-bitrate="256k">256k</button>
+                    <button class="btn-bitrate" data-bitrate="192k">192k</button>
+                    <button class="btn-bitrate" data-bitrate="128k">128k</button>
+                </div>
+            </div>
+
+            <!-- Quick URL Queue Input -->
+            <div class="url-input-box">
+                <textarea id="url-input" placeholder="Paste YouTube Video URL(s) here (one per line for multi-download queue)..." rows="2"></textarea>
+                <button id="btn-add-queue" class="btn-primary">
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"/></svg>
+                    Add to Queue
+                </button>
+            </div>
+        </section>
+
+        <!-- Active Queue Header -->
+        <div class="queue-header">
+            <div class="queue-title">
+                <h2>Download Queue</h2>
+                <span id="queue-count-tag" class="count-pill">0 items</span>
+            </div>
+            <div class="queue-actions">
+                <label class="concurrency-label">
+                    Max Parallel:
+                    <select id="concurrency-select">
+                        <option value="1">1</option>
+                        <option value="2" selected>2</option>
+                        <option value="3">3</option>
+                        <option value="4">4</option>
+                        <option value="5">5</option>
+                    </select>
+                </label>
+                <button id="btn-clear-completed" class="btn-secondary" title="Clear finished & errored downloads">
+                    Clear Done
+                </button>
+            </div>
+        </div>
+
+        <!-- Queue Item List -->
+        <div id="queue-list" class="queue-list">
+            <div class="empty-state">
+                <div class="empty-icon">🎵</div>
+                <p>No downloads in queue</p>
+                <span class="empty-sub">Click "Download MP3" on any YouTube video or paste URLs above!</span>
+            </div>
+        </div>
+
+        <!-- Footer -->
+        <footer class="app-footer">
+            <span>Destination: <code>Downloads/YouTube_MP3s</code></span>
+        </footer>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>
