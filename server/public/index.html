@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Server Panel — YouTube MP3 Engine</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="dashboard-layout">
+        <!-- Top Navigation Bar -->
+        <header class="top-nav">
+            <div class="nav-brand">
+                <div class="brand-badge">
+                    <span class="brand-icon">⚡</span>
+                </div>
+                <div class="brand-info">
+                    <h1>YouTube MP3 Engine</h1>
+                    <span class="brand-subtitle">Server Monitor & Download Audit Panel</span>
+                </div>
+            </div>
+
+            <div class="nav-actions">
+                <div class="live-indicator-box">
+                    <span class="live-dot pulse"></span>
+                    <span class="live-text" id="live-status-text">LIVE SYNC</span>
+                </div>
+
+                <div class="server-health-chip" id="server-health-chip">
+                    <span class="chip-dot"></span>
+                    <span id="chip-status">Checking...</span>
+                </div>
+
+                <button id="btn-auth-lock" class="btn-ghost" title="API Key Settings">
+                    <span class="lock-icon">🔑</span>
+                    <span id="auth-btn-label">API Key</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Main Dashboard Container -->
+        <main class="dashboard-main">
+            <!-- KPI Summary Cards Row -->
+            <section class="kpi-grid">
+                <!-- Total Downloaded -->
+                <div class="kpi-card card-glow-indigo">
+                    <div class="kpi-icon-wrap bg-indigo-subtle">
+                        <span>🎧</span>
+                    </div>
+                    <div class="kpi-content">
+                        <span class="kpi-label">Downloads to Devices</span>
+                        <div class="kpi-value-row">
+                            <h2 class="kpi-value" id="kpi-downloads">0</h2>
+                            <span class="kpi-pill success" id="kpi-success-rate">100% OK</span>
+                        </div>
+                        <span class="kpi-meta" id="kpi-requests-meta">0 total queued</span>
+                    </div>
+                </div>
+
+                <!-- Bandwidth Streamed -->
+                <div class="kpi-card card-glow-purple">
+                    <div class="kpi-icon-wrap bg-purple-subtle">
+                        <span>🚀</span>
+                    </div>
+                    <div class="kpi-content">
+                        <span class="kpi-label">Bandwidth Delivered</span>
+                        <div class="kpi-value-row">
+                            <h2 class="kpi-value" id="kpi-bandwidth">0 MB</h2>
+                        </div>
+                        <span class="kpi-meta">Pure 320k/HQ MP3 audio</span>
+                    </div>
+                </div>
+
+                <!-- Temp Buffer Usage -->
+                <div class="kpi-card card-glow-cyan">
+                    <div class="kpi-icon-wrap bg-cyan-subtle">
+                        <span>🧹</span>
+                    </div>
+                    <div class="kpi-content">
+                        <div class="kpi-header-with-btn">
+                            <span class="kpi-label">Server Temp Storage</span>
+                            <button id="btn-purge-temp" class="btn-micro" title="Purge all temporary files from server disk immediately">
+                                Force Purge
+                            </button>
+                        </div>
+                        <div class="kpi-value-row">
+                            <h2 class="kpi-value" id="kpi-temp-files">0 Files</h2>
+                            <span class="kpi-pill cyan" id="kpi-temp-size">0.0 MB</span>
+                        </div>
+                        <span class="kpi-meta" id="kpi-temp-path">Auto-cleans on download</span>
+                    </div>
+                </div>
+
+                <!-- Avg Speed & Uptime -->
+                <div class="kpi-card card-glow-emerald">
+                    <div class="kpi-icon-wrap bg-emerald-subtle">
+                        <span>⚡</span>
+                    </div>
+                    <div class="kpi-content">
+                        <span class="kpi-label">Avg Conversion Speed</span>
+                        <div class="kpi-value-row">
+                            <h2 class="kpi-value" id="kpi-avg-speed">0.0s</h2>
+                            <span class="kpi-pill indigo" id="kpi-ram">0 MB RAM</span>
+                        </div>
+                        <span class="kpi-meta" id="kpi-uptime">Uptime: 0m</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Active Queue Live Monitor Section -->
+            <section class="panel-card active-queue-section" id="active-queue-card">
+                <div class="panel-card-header">
+                    <div class="title-with-pill">
+                        <h3>⚡ Active Processing Queue</h3>
+                        <span class="count-badge" id="active-queue-count">0 processing</span>
+                    </div>
+                    <span class="header-hint">Live tasks converting via Linux FFmpeg & yt-dlp</span>
+                </div>
+                <div class="active-queue-list" id="active-queue-list">
+                    <div class="empty-queue-note">
+                        <span>✨ Engine idle — Ready for incoming conversion requests</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Download Audit Log Section (How, Where, When, What) -->
+            <section class="panel-card audit-section">
+                <!-- Audit Section Toolbar -->
+                <div class="audit-toolbar">
+                    <div class="toolbar-title-box">
+                        <h3>📋 Download Audit Records</h3>
+                        <span class="toolbar-subtitle">Complete forensic trace of <strong>What</strong>, <strong>Where</strong>, <strong>When</strong>, and <strong>How</strong></span>
+                    </div>
+
+                    <div class="toolbar-controls">
+                        <!-- Search Box -->
+                        <div class="search-input-box">
+                            <span class="search-icon">🔍</span>
+                            <input type="text" id="search-input" placeholder="Search by Title, Channel, IP address, or Video ID..." spellcheck="false">
+                            <button id="btn-clear-search" class="btn-clear-search hidden">✕</button>
+                        </div>
+
+                        <!-- Status Filter Dropdown -->
+                        <div class="filter-dropdown-box">
+                            <select id="filter-status">
+                                <option value="all">All Statuses</option>
+                                <option value="downloaded">💾 Downloaded to Device</option>
+                                <option value="ready">🟢 Ready in Temp</option>
+                                <option value="converting">⚙️ Converting</option>
+                                <option value="failed">⚠️ Failed</option>
+                            </select>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="toolbar-actions">
+                            <button id="btn-refresh" class="btn-action" title="Refresh Table">
+                                <span class="refresh-icon">🔄</span> Refresh
+                            </button>
+                            <button id="btn-clear-history" class="btn-danger-ghost" title="Clear all history records">
+                                🗑️ Clear Log
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audit Table Responsive Container -->
+                <div class="table-responsive">
+                    <table class="audit-table">
+                        <thead>
+                            <tr>
+                                <th class="th-what">WHAT (Video & Audio)</th>
+                                <th class="th-where">WHERE (Client & Location)</th>
+                                <th class="th-when">WHEN (Timeline)</th>
+                                <th class="th-how">HOW (Pipeline & Status)</th>
+                                <th class="th-actions">ACTIONS</th>
+                            </tr>
+                        </thead>
+                        <tbody id="audit-table-body">
+                            <tr>
+                                <td colspan="5" class="table-loading-cell">
+                                    <div class="table-spinner"></div>
+                                    <span>Loading download records...</span>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Table Pagination Footer -->
+                <div class="table-footer">
+                    <div class="footer-info">
+                        Showing <span id="showing-range">0-0</span> of <span id="total-records-count">0</span> download events
+                    </div>
+
+                    <div class="pagination-controls">
+                        <button id="btn-prev-page" class="btn-page" disabled>Previous</button>
+                        <span class="page-indicator" id="page-indicator">Page 1 of 1</span>
+                        <button id="btn-next-page" class="btn-page" disabled>Next</button>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <!-- Details Breakdown Modal -->
+    <div id="details-modal" class="modal-backdrop hidden">
+        <div class="modal-card">
+            <div class="modal-header">
+                <div class="modal-title-box">
+                    <span class="modal-icon">🔍</span>
+                    <h3>Download Event Forensic Breakdown</h3>
+                </div>
+                <button id="btn-close-modal" class="btn-close-modal">✕</button>
+            </div>
+
+            <div class="modal-body" id="modal-content">
+                <!-- Populated dynamically via app.js -->
+            </div>
+        </div>
+    </div>
+
+    <!-- API Key Authentication Modal -->
+    <div id="auth-modal" class="modal-backdrop hidden">
+        <div class="modal-card auth-card">
+            <div class="modal-header">
+                <div class="modal-title-box">
+                    <span class="modal-icon">🔐</span>
+                    <h3>Server Panel Authentication</h3>
+                </div>
+                <button id="btn-close-auth-modal" class="btn-close-modal">✕</button>
+            </div>
+
+            <div class="modal-body">
+                <p class="auth-desc">Enter the server <code>API_KEY</code> to access the live audit dashboard.</p>
+                <div class="form-group">
+                    <label for="admin-api-key-input">Server API Key (X-API-Key):</label>
+                    <input type="password" id="admin-api-key-input" placeholder="Paste your API key here..." spellcheck="false">
+                </div>
+                <div class="auth-actions">
+                    <button id="btn-save-auth" class="btn-primary">Unlock Dashboard</button>
+                    <span id="auth-feedback" class="auth-feedback"></span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

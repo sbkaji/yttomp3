@@ -8,6 +8,19 @@ if (!fs.existsSync(binDir)) {
     fs.mkdirSync(binDir, { recursive: true });
 }
 
+const isWin = process.platform === 'win32';
+
+if (!isWin) {
+    console.log('Detected Linux/Unix environment.');
+    console.log('To install FFmpeg on Linux, run:');
+    console.log('  Ubuntu/Debian/Coolify:  sudo apt update && sudo apt install -y ffmpeg');
+    console.log('  Alpine Linux:           apk add ffmpeg');
+    console.log('  RHEL/CentOS/Fedora:     dnf install -y ffmpeg');
+    console.log('');
+    console.log('Alternatively, the server already includes bundled ffmpeg-static automatically!');
+    process.exit(0);
+}
+
 const ffmpegUrl = 'https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip';
 const zipPath = path.join(__dirname, 'ffmpeg_download.zip');
 

@@ -6,34 +6,70 @@ const { spawn, execFile, execFileSync } = require('child_process');
 const sanitize = require('sanitize-filename');
 const NodeID3 = require('node-id3');
 
-// ─── Binary Resolution ──────────────────────────────────────────────────────
-// Priority: 1) System-installed binaries  2) Local ./bin/ bundled binaries
-const BIN_DIR = path.join(__dirname, 'bin');
+// ─── OS & Platform Detection ───────────────────────────────────────────────
+const OS_PLATFORM = process.platform;
+const IS_WIN = OS_PLATFORM === 'win32';
+const IS_MAC = OS_PLATFORM === 'darwin';
+const OS_ARCH = process.arch;
 
-/**
- * Find a binary on the system PATH or fall back to local ./bin/ directory.
- * On Ubuntu/Docker, yt-dlp and ffmpeg are installed via apt/pip.
- * On Windows dev, they live in ./bin/.
- */
+const BIN_DIR = path.join(__dirname, 'bin');
 const TEMP_DIR = process.env.TEMP_DIR || path.join(require('os').tmpdir(), 'ytmp3_temp');
 
 /**
- * Find a binary on the system PATH or fall back to local ./bin/ directory.
- * On Ubuntu/Docker, yt-dlp and ffmpeg are installed in /usr/local/bin or /usr/bin.
- * On Windows dev, they live in ./bin/.
+ * Ensure file has executable permissions on Linux / Unix environments
+ */
+function ensureExecutable(filePath) {
+    if (!IS_WIN && filePath && fs.existsSync(filePath)) {
+        try {
+            const stat = fs.statSync(filePath);
+            if (!(stat.mode & 0o111)) {
+                fs.chmodSync(filePath, 0o755);
+            }
+        } catch (e) {
+            // Best effort
+        }
+    }
+}
+
+/**
+ * Find a binary on the system PATH or fall back to local ./bin/ directory or npm packages.
+ * Automatically adapts between Windows Server / Desktop and Linux (Ubuntu, Docker, Coolify).
  */
 function findBinary(name) {
-    const localName = process.platform === 'win32' ? `${name}.exe` : name;
-    const localPath = path.join(BIN_DIR, localName);
+    // 0) Explicit ENV override (e.g., YTDLP_PATH=/usr/bin/yt-dlp, FFMPEG_PATH=/usr/bin/ffmpeg)
+    const envVar = name === 'yt-dlp' ? process.env.YTDLP_PATH : (name === 'ffmpeg' ? process.env.FFMPEG_PATH : null);
+    if (envVar && fs.existsSync(envVar)) {
+        ensureExecutable(envVar);
+        console.log(`[Binary] Using ENV ${name}: ${envVar}`);
+        return envVar;
+    }
 
-    // 1) Direct check in standard Linux locations (Ubuntu / Docker / Coolify)
-    if (process.platform !== 'win32') {
-        const standardLinuxPaths = [
+    const binaryFileName = IS_WIN ? `${name}.exe` : name;
+    const localPath = path.join(BIN_DIR, binaryFileName);
+
+    // 1) Direct check in standard Unix locations (Ubuntu / Debian / Docker / Coolify / Alpine)
+    if (!IS_WIN) {
+        const standardUnixPaths = [
             `/usr/local/bin/${name}`,
             `/usr/bin/${name}`,
-            `/bin/${name}`
+            `/bin/${name}`,
+            `/snap/bin/${name}`,
+            path.join(process.env.HOME || '/root', '.local/bin', name)
         ];
-        for (const p of standardLinuxPaths) {
+        for (const p of standardUnixPaths) {
+            if (fs.existsSync(p)) {
+                ensureExecutable(p);
+                console.log(`[Binary] Found system ${name} at: ${p}`);
+                return p;
+            }
+        }
+    } else {
+        const standardWinPaths = [
+            `C:\\ProgramData\\chocolatey\\bin\\${name}.exe`,
+            `C:\\ffmpeg\\bin\\${name}.exe`,
+            `C:\\yt-dlp\\${name}.exe`
+        ];
+        for (const p of standardWinPaths) {
             if (fs.existsSync(p)) {
                 console.log(`[Binary] Found system ${name} at: ${p}`);
                 return p;
@@ -41,25 +77,46 @@ function findBinary(name) {
         }
     }
 
-    // 2) Try system PATH via which/where
+    // 2) Try system PATH via which (Linux) or where (Windows)
+    // NOTE: stdio is piped/ignored to suppress Windows "INFO: Could not find files for the given pattern(s)."
     try {
-        const which = process.platform === 'win32' ? 'where' : 'which';
-        const result = execFileSync(which, [name], { encoding: 'utf8', timeout: 5000 }).trim().split('\n')[0].trim();
+        const which = IS_WIN ? 'where' : 'which';
+        const result = execFileSync(which, [name], {
+            encoding: 'utf8',
+            timeout: 5000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true
+        }).trim().split(/\r?\n/)[0].trim();
+
         if (result && fs.existsSync(result)) {
+            ensureExecutable(result);
             console.log(`[Binary] Using PATH ${name}: ${result}`);
             return result;
         }
     } catch (e) {
-        // Not found on PATH, continue
+        // Not found on PATH, continue to local fallback
     }
 
     // 3) Fall back to local ./bin/ directory
     if (fs.existsSync(localPath)) {
+        ensureExecutable(localPath);
         console.log(`[Binary] Using local ${name}: ${localPath}`);
         return localPath;
     }
 
-    // 4) Return local path (will be downloaded or error at runtime)
+    // 4) For ffmpeg, check ffmpeg-static npm package fallback before returning
+    if (name === 'ffmpeg') {
+        try {
+            const ffmpegStatic = require('ffmpeg-static');
+            if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+                ensureExecutable(ffmpegStatic);
+                console.log(`[Binary] Using bundled ffmpeg-static: ${ffmpegStatic}`);
+                return ffmpegStatic;
+            }
+        } catch (e) {}
+    }
+
+    // Return anticipated local path (will be auto-downloaded if needed)
     return localPath;
 }
 
@@ -68,35 +125,61 @@ let FFMPEG_PATH = findBinary('ffmpeg');
 
 function ensureBinDir() {
     if (!fs.existsSync(BIN_DIR)) {
-        fs.mkdirSync(BIN_DIR, { recursive: true });
+        fs.mkdirSync(BIN_DIR, { recursive: true, mode: 0o777 });
     }
 }
 
 /**
- * Download latest yt-dlp binary from GitHub Releases (fallback for dev/local)
+ * Download latest yt-dlp binary from GitHub Releases (auto-adapts to Windows, Linux x64/arm64, macOS)
  */
 function downloadYtDlp() {
     return new Promise((resolve, reject) => {
-        // If system binary exists, use it
+        // If current binary works, use it
         try {
-            execFileSync(YTDLP_PATH, ['--version'], { timeout: 10000 });
+            execFileSync(YTDLP_PATH, ['--version'], {
+                timeout: 10000,
+                stdio: ['ignore', 'pipe', 'ignore'],
+                windowsHide: true
+            });
             return resolve(YTDLP_PATH);
         } catch (e) {
-            // System binary not working, try downloading
+            // Binary not working or not present, proceed to setup
         }
 
         ensureBinDir();
-        const localPath = path.join(BIN_DIR, process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp');
+        const localFileName = IS_WIN ? 'yt-dlp.exe' : 'yt-dlp';
+        const localPath = path.join(BIN_DIR, localFileName);
 
         if (fs.existsSync(localPath)) {
-            YTDLP_PATH = localPath;
-            return resolve(localPath);
+            ensureExecutable(localPath);
+            try {
+                execFileSync(localPath, ['--version'], {
+                    timeout: 10000,
+                    stdio: ['ignore', 'pipe', 'ignore'],
+                    windowsHide: true
+                });
+                YTDLP_PATH = localPath;
+                return resolve(localPath);
+            } catch (e) {
+                // Existing file might be corrupt, re-download
+            }
         }
 
-        console.log('[yt-dlp Engine] Downloading latest yt-dlp binary...');
-        const downloadUrl = process.platform === 'win32'
-            ? 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe'
-            : 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+        console.log(`[yt-dlp Engine] Downloading yt-dlp binary for ${OS_PLATFORM} (${OS_ARCH})...`);
+        
+        let downloadUrl;
+        if (IS_WIN) {
+            downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe';
+        } else if (IS_MAC) {
+            downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos';
+        } else if (OS_ARCH === 'arm64' || OS_ARCH === 'aarch64') {
+            downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64';
+        } else if (OS_ARCH === 'arm') {
+            downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_armv7l';
+        } else {
+            // Linux x86_64
+            downloadUrl = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp';
+        }
 
         const file = fs.createWriteStream(localPath);
 
@@ -108,9 +191,7 @@ function downloadYtDlp() {
                     res.pipe(file);
                     file.on('finish', () => {
                         file.close(() => {
-                            if (process.platform !== 'win32') {
-                                fs.chmodSync(localPath, 0o755);
-                            }
+                            ensureExecutable(localPath);
                             console.log('[yt-dlp Engine] Binary download complete!');
                             YTDLP_PATH = localPath;
                             resolve(localPath);
@@ -130,34 +211,43 @@ function downloadYtDlp() {
 }
 
 /**
- * Ensure valid FFmpeg binary exists
+ * Ensure valid FFmpeg binary exists (System, ./bin/, or npm ffmpeg-static)
  */
 async function ensureFFmpeg() {
     try {
-        execFileSync(FFMPEG_PATH, ['-version'], { timeout: 10000 });
+        execFileSync(FFMPEG_PATH, ['-version'], {
+            timeout: 10000,
+            stdio: ['ignore', 'pipe', 'ignore'],
+            windowsHide: true
+        });
         return FFMPEG_PATH;
     } catch (e) {
         // Try local bin
         ensureBinDir();
-        const localPath = path.join(BIN_DIR, process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
+        const localFileName = IS_WIN ? 'ffmpeg.exe' : 'ffmpeg';
+        const localPath = path.join(BIN_DIR, localFileName);
         if (fs.existsSync(localPath)) {
+            ensureExecutable(localPath);
             FFMPEG_PATH = localPath;
             return localPath;
         }
 
-        // Try ffmpeg-static npm package as last resort
+        // Try ffmpeg-static npm package as universal cross-platform fallback
         try {
             const ffmpegStatic = require('ffmpeg-static');
             if (ffmpegStatic && fs.existsSync(ffmpegStatic)) {
+                ensureExecutable(ffmpegStatic);
                 FFMPEG_PATH = ffmpegStatic;
-                console.log(`[FFmpeg] Using ffmpeg-static: ${ffmpegStatic}`);
+                console.log(`[FFmpeg] Using bundled ffmpeg-static: ${ffmpegStatic}`);
                 return ffmpegStatic;
             }
-        } catch (e2) {
-            // ffmpeg-static not installed
-        }
+        } catch (e2) {}
 
-        console.error('[FFmpeg] No FFmpeg binary found! Install ffmpeg on system or place in ./bin/');
+        const installTip = IS_WIN
+            ? 'Place ffmpeg.exe in server/bin/ or install via winget: winget install Gyan.FFmpeg'
+            : 'Install ffmpeg on your Linux server via: apt-get update && apt-get install -y ffmpeg';
+
+        console.error(`[FFmpeg] No working FFmpeg binary found! Tip: ${installTip}`);
         return FFMPEG_PATH;
     }
 }
@@ -235,17 +325,26 @@ async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
 
     const kbps = bitrate.replace('k', '').replace('K', '') + 'K';
 
-    // Determine ffmpeg location directory for yt-dlp
+    // Determine ffmpeg location for yt-dlp (yt-dlp supports exact binary path or directory)
+    const ffmpegLocation = FFMPEG_PATH;
     const ffmpegDir = path.dirname(FFMPEG_PATH);
 
-    // Arguments for pure MP3 audio extraction via FFmpeg
+    // Arguments for pure MP3 audio extraction via FFmpeg with anti-freeze safeguards
+    const maxFilesize = process.env.MAX_FILESIZE || '350M';
     const args = [
         cleanUrl,
         '-f', 'bestaudio/best',
         '--extract-audio',
         '--audio-format', 'mp3',
         '--audio-quality', kbps,
-        '--ffmpeg-location', ffmpegDir,
+        '--newline',
+        '--progress',
+        '--socket-timeout', '25',
+        '--retries', '3',
+        '--fragment-retries', '3',
+        '--no-live-from-start',
+        '--max-filesize', maxFilesize,
+        '--ffmpeg-location', ffmpegLocation,
         '--extractor-args', 'youtube:player_client=mweb,android,ios',
         '--output', path.join(outputDir, `${sanitizedTitle}.%(ext)s`),
         '--no-playlist',
@@ -259,31 +358,63 @@ async function convertToMp3({ url, bitrate = '320k', outputDir, onProgress }) {
         PATH: ffmpegDir + pathSep + (process.env.PATH || ''),
     };
 
+    const timeoutMs = parseInt(process.env.DOWNLOAD_TIMEOUT_MS, 10) || 8 * 60 * 1000; // 8 minutes max
+
     await new Promise((resolve, reject) => {
         const proc = spawn(YTDLP_PATH, args, { env });
+        let timedOut = false;
 
-        proc.stdout.on('data', (data) => {
-            const str = data.toString();
-            console.log('[yt-dlp stdout]:', str.trim());
+        const killTimer = setTimeout(() => {
+            timedOut = true;
+            console.warn(`[yt-dlp Engine] Process timeout (${timeoutMs / 1000}s) reached for: ${cleanUrl}. Terminating...`);
+            try {
+                if (IS_WIN && proc.pid) {
+                    execFile('taskkill', ['/pid', String(proc.pid), '/f', '/t'], () => {});
+                } else if (proc.pid) {
+                    proc.kill('SIGKILL');
+                }
+            } catch (e) {}
+        }, timeoutMs);
 
-            const match = str.match(/\[download\]\s+([\d\.]+)%/);
-            if (match && onProgress) {
-                const dlPercent = parseFloat(match[1]);
-                const mappedPercent = Math.min(80, 10 + Math.round((dlPercent / 100) * 70));
-                onProgress({ stage: 'downloading', percent: mappedPercent });
+        function processLogChunk(data, isErr = false) {
+            const text = data.toString();
+            const lines = text.split(/[\r\n]+/);
+            for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed) continue;
+                if (isErr) {
+                    console.warn('[yt-dlp stderr]:', trimmed);
+                } else {
+                    console.log('[yt-dlp stdout]:', trimmed);
+                }
+
+                const match = trimmed.match(/\[download\]\s+([\d\.]+)%/);
+                if (match && onProgress) {
+                    const dlPercent = parseFloat(match[1]);
+                    // Map download percent across 10% - 80% range
+                    const mappedPercent = Math.min(80, 10 + Math.round((dlPercent / 100) * 70));
+                    onProgress({ stage: 'downloading', percent: mappedPercent });
+                }
+
+                if (trimmed.includes('[ExtractAudio]')) {
+                    if (onProgress) onProgress({ stage: 'decoding_ffmpeg', percent: 82 });
+                }
             }
-            if (str.includes('[ExtractAudio]')) {
-                if (onProgress) onProgress({ stage: 'decoding_ffmpeg', percent: 82 });
-            }
-        });
+        }
 
-        proc.stderr.on('data', (data) => {
-            console.warn('[yt-dlp stderr]:', data.toString().trim());
-        });
+        proc.stdout.on('data', (data) => processLogChunk(data, false));
+        proc.stderr.on('data', (data) => processLogChunk(data, true));
 
-        proc.on('error', (err) => reject(err));
+        proc.on('error', (err) => {
+            clearTimeout(killTimer);
+            reject(err);
+        });
 
         proc.on('close', (code) => {
+            clearTimeout(killTimer);
+            if (timedOut) {
+                return reject(new Error(`Download exceeded maximum time limit (${Math.round(timeoutMs / 60000)}m) and was terminated.`));
+            }
             if (code === 0) {
                 resolve();
             } else {
@@ -366,5 +497,10 @@ module.exports = {
     getVideoInfo,
     convertToMp3,
     ensureFFmpeg,
-    TEMP_DIR
+    TEMP_DIR,
+    getYtDlpPath: () => YTDLP_PATH,
+    getFFmpegPath: () => FFMPEG_PATH,
+    OS_PLATFORM,
+    OS_ARCH,
+    IS_WIN
 };

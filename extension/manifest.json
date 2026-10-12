@@ -6,11 +6,13 @@
   "permissions": [
     "storage",
     "activeTab",
-    "notifications"
+    "notifications",
+    "downloads"
   ],
   "host_permissions": [
     "*://*.youtube.com/*",
-    "https://api.yourdomain.com/*"
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js"

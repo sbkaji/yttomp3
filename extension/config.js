@@ -6,12 +6,14 @@
  */
 const CONFIG = {
     // ─── Server URL ──────────────────────────────────────────
-    // Change to your production server address before publishing
+    // Default: 'http://localhost:3500' for local server.
+    // If hosting on Coolify or a remote Linux/Windows server, change here
+    // or configure anytime in the extension popup settings (⚙️ icon).
     // Examples:
-    //   'https://api.yourdomain.com'
+    //   'http://localhost:3500'
     //   'https://ytmp3.yourdomain.com'
     //   'http://your-vps-ip:3500'
-    SERVER_URL: 'https://api.yourdomain.com',
+    SERVER_URL: 'http://localhost:3500',
 
     // ─── API Key ─────────────────────────────────────────────
     // Must match the API_KEY value set in the server's .env file

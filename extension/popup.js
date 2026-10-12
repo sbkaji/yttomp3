@@ -1,37 +1,73 @@
 /**
  * Popup Controller — Production Ready
  * =====================================
- * Connects to the remote production server with API key authentication.
- * SSE event streaming, queue management, retry logic.
+ * Supports Coolify Ubuntu remote server & local Windows server, API key authentication,
+ * dynamic progress bar with multi-stage audio conversion feedback,
+ * auto-download to user's PC device, and temporary manual download links.
  */
 
 let SERVER_URL = '';
 let API_KEY = '';
+let AUTO_DOWNLOAD = true;
 let eventSource = null;
 let currentBitrate = '320k';
 let reconnectTimer = null;
 let reconnectAttempts = 0;
+let popupPollInterval = null;
 const MAX_RECONNECT_ATTEMPTS = 10;
-const RECONNECT_BASE_DELAY = 2000; // 2s, doubles on each retry
+const RECONNECT_BASE_DELAY = 2000;
+
+// Track items saved to device in current session to prevent repetitive auto-downloads
+const savedToDeviceItems = new Set();
 
 document.addEventListener('DOMContentLoaded', () => {
-    // Load server config from background worker
-    chrome.runtime.sendMessage({ action: 'GET_SERVER_URL' }, (response) => {
-        if (response) {
-            SERVER_URL = response.serverUrl;
-            API_KEY = response.apiKey;
+    loadSettingsAndConnect();
+    initBitrateSelector();
+    initSettingsDrawer();
+    initUIEventListeners();
+
+    // Listen for runtime updates from background service worker
+    chrome.runtime.onMessage.addListener((message) => {
+        if (message.action === 'QUEUE_UPDATED' && message.queueState) {
+            renderQueue(message.queueState);
+            checkIfPollingNeeded(message.queueState);
         }
-        initBitrateSelector();
-        initServerConnection();
-        initUIEventListeners();
     });
 });
+
+/**
+ * Load server config from storage / background worker and connect
+ */
+function loadSettingsAndConnect() {
+    chrome.runtime.sendMessage({ action: 'GET_CONFIG' }, (config) => {
+        if (config) {
+            SERVER_URL = config.serverUrl || CONFIG.SERVER_URL;
+            if (!SERVER_URL || SERVER_URL === 'https://api.yourdomain.com' || SERVER_URL === 'https://ytmp3.yourdomain.com') {
+                SERVER_URL = 'http://localhost:3500';
+            }
+            API_KEY = config.apiKey || CONFIG.API_KEY;
+            AUTO_DOWNLOAD = config.autoDownload !== undefined ? config.autoDownload : true;
+
+            // Populate settings drawer inputs
+            const urlInput = document.getElementById('setting-server-url');
+            const keyInput = document.getElementById('setting-api-key');
+            const autoDlInput = document.getElementById('setting-auto-download');
+
+            if (urlInput) urlInput.value = SERVER_URL;
+            if (keyInput) keyInput.value = API_KEY;
+            if (autoDlInput) autoDlInput.checked = AUTO_DOWNLOAD;
+        }
+
+        initServerConnection();
+    });
+}
 
 /**
  * Build headers with API key
  */
 function getAuthHeaders(contentType = false) {
-    const headers = { 'X-API-Key': API_KEY };
+    const headers = {};
+    if (API_KEY) headers['X-API-Key'] = API_KEY;
     if (contentType) headers['Content-Type'] = 'application/json';
     return headers;
 }
@@ -40,7 +76,8 @@ function getAuthHeaders(contentType = false) {
  * Authenticated fetch wrapper
  */
 async function apiFetch(url, options = {}) {
-    const response = await fetch(url, {
+    const fullUrl = url.startsWith('http') ? url : `${SERVER_URL}${url}`;
+    const response = await fetch(fullUrl, {
         ...options,
         headers: {
             ...getAuthHeaders(options.method === 'POST' || options.method === 'DELETE'),
@@ -56,7 +93,132 @@ async function apiFetch(url, options = {}) {
     return response.json();
 }
 
-// Initialize Bitrate Selector
+/**
+ * Fetch latest queue snapshot immediately and check polling
+ */
+function refreshQueueNow() {
+    apiFetch('/api/queue')
+        .then(state => {
+            renderQueue(state);
+            checkIfPollingNeeded(state);
+        })
+        .catch(err => {
+            console.warn('[Popup] refreshQueueNow error:', err.message);
+        });
+}
+
+function checkIfPollingNeeded(state) {
+    const hasActive = state && Array.isArray(state.items) && state.items.some(i =>
+        ['pending', 'downloading', 'decoding_ffmpeg', 'tagging'].includes(i.status) ||
+        ['queued', 'fetching_meta', 'downloading', 'decoding_ffmpeg', 'tagging'].includes(i.stage)
+    );
+
+    if (hasActive && !popupPollInterval) {
+        popupPollInterval = setInterval(() => {
+            apiFetch('/api/queue')
+                .then(s => {
+                    renderQueue(s);
+                    checkIfPollingNeeded(s);
+                })
+                .catch(() => {});
+        }, 1000);
+    } else if (!hasActive && popupPollInterval) {
+        clearInterval(popupPollInterval);
+        popupPollInterval = null;
+    }
+}
+
+/**
+ * Initialize Server Connection & Health Check
+ */
+function initServerConnection() {
+    const statusBadge = document.getElementById('server-status');
+    const statusText = document.getElementById('status-text');
+
+    if (!SERVER_URL) {
+        statusBadge.className = 'status-badge offline';
+        statusText.textContent = 'Set Server URL';
+        return;
+    }
+
+    statusBadge.className = 'status-badge connecting';
+    statusText.textContent = 'Connecting...';
+
+    fetch(`${SERVER_URL}/health`, { headers: getAuthHeaders() })
+        .then(res => res.json())
+        .then((data) => {
+            statusBadge.className = 'status-badge online';
+            statusText.textContent = 'Server Online';
+            reconnectAttempts = 0;
+            refreshQueueNow();
+            connectSSE();
+        })
+        .catch((err) => {
+            statusBadge.className = 'status-badge offline';
+            statusText.textContent = 'Server Offline';
+            renderEmptyState('Server unreachable. Click ⚙️ to configure your server address.');
+            scheduleReconnect();
+        });
+}
+
+function scheduleReconnect() {
+    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+        document.getElementById('status-text').textContent = 'Offline';
+        return;
+    }
+
+    const delay = RECONNECT_BASE_DELAY * Math.pow(2, Math.min(reconnectAttempts, 4));
+    reconnectAttempts++;
+
+    clearTimeout(reconnectTimer);
+    reconnectTimer = setTimeout(() => {
+        initServerConnection();
+    }, delay);
+}
+
+/**
+ * Subscribe to SSE Live Updates from Server
+ */
+function connectSSE() {
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+
+    const sseUrl = `${SERVER_URL}/api/events?apiKey=${encodeURIComponent(API_KEY)}`;
+    eventSource = new EventSource(sseUrl);
+
+    eventSource.addEventListener('queue_update', (e) => {
+        try {
+            const payload = JSON.parse(e.data);
+            renderQueue(payload.state);
+            checkIfPollingNeeded(payload.state);
+        } catch (err) {}
+    });
+
+    eventSource.addEventListener('init', (e) => {
+        try {
+            const payload = JSON.parse(e.data);
+            renderQueue(payload.state);
+            checkIfPollingNeeded(payload.state);
+        } catch (err) {}
+    });
+
+    eventSource.addEventListener('server_shutdown', () => {
+        document.getElementById('server-status').className = 'status-badge offline';
+        document.getElementById('status-text').textContent = 'Server Stopped';
+    });
+
+    eventSource.onerror = () => {
+        document.getElementById('server-status').className = 'status-badge offline';
+        document.getElementById('status-text').textContent = 'Reconnecting...';
+        scheduleReconnect();
+    };
+}
+
+/**
+ * Bitrate Selector Initialization
+ */
 function initBitrateSelector() {
     chrome.storage.local.get(['bitrate'], (res) => {
         if (res.bitrate) {
@@ -80,77 +242,103 @@ function updateBitrateUI() {
     });
 }
 
-// Connect to Server & SSE EventStream
-function initServerConnection() {
-    const statusBadge = document.getElementById('server-status');
-    const statusText = document.getElementById('status-text');
+/**
+ * Settings Drawer Logic
+ */
+function initSettingsDrawer() {
+    const settingsPanel = document.getElementById('settings-panel');
+    const btnToggleSettings = document.getElementById('btn-toggle-settings');
+    const btnCloseSettings = document.getElementById('btn-close-settings');
+    const serverStatusBadge = document.getElementById('server-status');
+    const btnSaveSettings = document.getElementById('btn-save-settings');
+    const statusMsg = document.getElementById('settings-status-msg');
+    const btnToggleKey = document.getElementById('btn-toggle-key-visibility');
+    const apiKeyInput = document.getElementById('setting-api-key');
 
-    statusBadge.className = 'status-badge connecting';
-    statusText.textContent = 'Connecting...';
-
-    fetch(`${SERVER_URL}/health`, { headers: getAuthHeaders() })
-        .then(res => res.json())
-        .then((data) => {
-            statusBadge.className = 'status-badge online';
-            statusText.textContent = 'Engine Online';
-            reconnectAttempts = 0;
-            connectSSE();
-        })
-        .catch((err) => {
-            statusBadge.className = 'status-badge offline';
-            statusText.textContent = 'Engine Offline';
-            renderEmptyState('Server unreachable. Check your server is running.');
-            scheduleReconnect();
-        });
-}
-
-// Schedule reconnection with exponential backoff
-function scheduleReconnect() {
-    if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-        document.getElementById('status-text').textContent = 'Connection Failed';
-        return;
+    function toggleDrawer(open) {
+        if (open === undefined) {
+            settingsPanel.classList.toggle('hidden');
+        } else if (open) {
+            settingsPanel.classList.remove('hidden');
+        } else {
+            settingsPanel.classList.add('hidden');
+        }
     }
 
-    const delay = RECONNECT_BASE_DELAY * Math.pow(2, Math.min(reconnectAttempts, 5));
-    reconnectAttempts++;
+    if (btnToggleSettings) btnToggleSettings.addEventListener('click', () => toggleDrawer());
+    if (btnCloseSettings) btnCloseSettings.addEventListener('click', () => toggleDrawer(false));
+    if (serverStatusBadge) {
+        serverStatusBadge.addEventListener('click', () => toggleDrawer(true));
+    }
 
-    clearTimeout(reconnectTimer);
-    reconnectTimer = setTimeout(() => {
-        initServerConnection();
-    }, delay);
+    if (btnToggleKey && apiKeyInput) {
+        btnToggleKey.addEventListener('click', () => {
+            const isPassword = apiKeyInput.type === 'password';
+            apiKeyInput.type = isPassword ? 'text' : 'password';
+            btnToggleKey.textContent = isPassword ? '🔒' : '👁️';
+        });
+    }
+
+    if (btnSaveSettings) {
+        btnSaveSettings.addEventListener('click', async () => {
+            const urlInput = document.getElementById('setting-server-url').value.trim();
+            const keyInput = document.getElementById('setting-api-key').value.trim();
+            const autoDlInput = document.getElementById('setting-auto-download').checked;
+
+            if (!urlInput) {
+                statusMsg.textContent = '⚠️ Enter a valid server URL';
+                statusMsg.style.color = 'var(--warning)';
+                return;
+            }
+
+            statusMsg.textContent = 'Testing connection...';
+            statusMsg.style.color = 'var(--text-muted)';
+            btnSaveSettings.disabled = true;
+
+            try {
+                const testRes = await fetch(`${urlInput.replace(/\/+$/, '')}/health`, {
+                    headers: keyInput ? { 'X-API-Key': keyInput } : {}
+                });
+
+                if (!testRes.ok) {
+                    throw new Error(`Server returned HTTP ${testRes.status}`);
+                }
+
+                chrome.runtime.sendMessage({
+                    action: 'SAVE_CONFIG',
+                    serverUrl: urlInput,
+                    apiKey: keyInput,
+                    autoDownload: autoDlInput
+                }, () => {
+                    SERVER_URL = urlInput.replace(/\/+$/, '');
+                    API_KEY = keyInput;
+                    AUTO_DOWNLOAD = autoDlInput;
+
+                    statusMsg.textContent = 'Connected & Saved ✓';
+                    statusMsg.style.color = 'var(--success)';
+                    btnSaveSettings.disabled = false;
+
+                    reconnectAttempts = 0;
+                    initServerConnection();
+
+                    setTimeout(() => {
+                        toggleDrawer(false);
+                        statusMsg.textContent = '';
+                    }, 1200);
+                });
+
+            } catch (err) {
+                statusMsg.textContent = `❌ ${err.message}`;
+                statusMsg.style.color = 'var(--danger)';
+                btnSaveSettings.disabled = false;
+            }
+        });
+    }
 }
 
-// Subscribe to SSE Live Updates from Server
-function connectSSE() {
-    if (eventSource) eventSource.close();
-
-    // EventSource doesn't support custom headers natively, so we pass apiKey as query param
-    const sseUrl = `${SERVER_URL}/api/events?apiKey=${encodeURIComponent(API_KEY)}`;
-    eventSource = new EventSource(sseUrl);
-
-    eventSource.addEventListener('queue_update', (e) => {
-        const payload = JSON.parse(e.data);
-        renderQueue(payload.state);
-    });
-
-    eventSource.addEventListener('init', (e) => {
-        const payload = JSON.parse(e.data);
-        renderQueue(payload.state);
-    });
-
-    eventSource.addEventListener('server_shutdown', () => {
-        document.getElementById('server-status').className = 'status-badge offline';
-        document.getElementById('status-text').textContent = 'Server Shutting Down';
-    });
-
-    eventSource.onerror = () => {
-        document.getElementById('server-status').className = 'status-badge offline';
-        document.getElementById('status-text').textContent = 'Reconnecting...';
-        scheduleReconnect();
-    };
-}
-
-// UI Event Listeners
+/**
+ * General UI Event Listeners
+ */
 function initUIEventListeners() {
     // Add to Queue button
     document.getElementById('btn-add-queue').addEventListener('click', async () => {
@@ -164,16 +352,18 @@ function initUIEventListeners() {
 
         try {
             if (urls.length === 1) {
-                await apiFetch(`${SERVER_URL}/api/download`, {
+                await apiFetch('/api/download', {
                     method: 'POST',
                     body: JSON.stringify({ url: urls[0], bitrate: currentBitrate })
                 });
             } else {
-                await apiFetch(`${SERVER_URL}/api/download-batch`, {
+                await apiFetch('/api/download-batch', {
                     method: 'POST',
                     body: JSON.stringify({ urls, bitrate: currentBitrate })
                 });
             }
+            chrome.runtime.sendMessage({ action: 'START_POLLING' });
+            refreshQueueNow();
         } catch (err) {
             console.error('Queue add failed:', err.message);
         }
@@ -182,7 +372,8 @@ function initUIEventListeners() {
     // Clear completed button
     document.getElementById('btn-clear-completed').addEventListener('click', async () => {
         try {
-            await apiFetch(`${SERVER_URL}/api/queue/clear-completed`, { method: 'POST' });
+            await apiFetch('/api/queue/clear-completed', { method: 'POST' });
+            refreshQueueNow();
         } catch (err) {
             console.error('Clear failed:', err.message);
         }
@@ -191,7 +382,7 @@ function initUIEventListeners() {
     // Concurrency selector
     document.getElementById('concurrency-select').addEventListener('change', async (e) => {
         try {
-            await apiFetch(`${SERVER_URL}/api/settings/concurrency`, {
+            await apiFetch('/api/settings/concurrency', {
                 method: 'POST',
                 body: JSON.stringify({ limit: e.target.value })
             });
@@ -201,7 +392,85 @@ function initUIEventListeners() {
     });
 }
 
-// Render Queue List & Items
+function formatBytes(bytes) {
+    if (!bytes || bytes === 0) return 'MP3';
+    const mb = bytes / (1024 * 1024);
+    return `${mb.toFixed(1)} MB`;
+}
+
+/**
+ * Stage descriptions, icons, and progress numbers for clear UX
+ */
+function getStageInfo(item) {
+    const status = item.status;
+    const stage = item.stage;
+    const progress = item.progress || 0;
+
+    if (status === 'error' || stage === 'failed') {
+        return {
+            icon: '⚠️',
+            text: item.error ? `Error: ${item.error}` : 'Conversion Failed',
+            percent: 0,
+            isError: true
+        };
+    }
+
+    if (status === 'completed' || item.downloadReady || stage === 'ready') {
+        return {
+            icon: '🟢',
+            text: 'Download Ready! (100%)',
+            percent: 100,
+            isReady: true
+        };
+    }
+
+    if (status === 'decoding_ffmpeg' || stage === 'decoding_ffmpeg') {
+        return {
+            icon: '⚙️',
+            text: `FFmpeg Converting (${item.bitrate || '320k'})...`,
+            percent: Math.max(progress, 82),
+            animating: true
+        };
+    }
+
+    if (status === 'tagging' || stage === 'tagging') {
+        return {
+            icon: '🎨',
+            text: 'Embedding ID3 Cover Art & Tags...',
+            percent: Math.max(progress, 90),
+            animating: true
+        };
+    }
+
+    if (status === 'downloading' || stage === 'downloading') {
+        return {
+            icon: '📥',
+            text: `Downloading Audio Stream (${progress}%)`,
+            percent: progress,
+            animating: true
+        };
+    }
+
+    if (stage === 'fetching_meta') {
+        return {
+            icon: '📡',
+            text: 'Fetching Video Details...',
+            percent: 5,
+            animating: true
+        };
+    }
+
+    return {
+        icon: '⏳',
+        text: 'Waiting in Queue...',
+        percent: 0,
+        animating: false
+    };
+}
+
+/**
+ * Render Queue List & Dynamic Progress Bars
+ */
 function renderQueue(state) {
     if (!state) return;
 
@@ -230,28 +499,75 @@ function renderQueue(state) {
     queueList.innerHTML = '';
 
     state.items.forEach(item => {
-        const card = document.createElement('div');
-        card.className = 'queue-item';
-
+        const stageInfo = getStageInfo(item);
         const thumbSrc = item.thumbnail || 'icons/icon48.png';
-        const progress = item.progress || 0;
-        const stageLabel = getStageLabel(item.status, item.stage);
+        const isReady = item.downloadReady || item.status === 'completed';
+        const isSaved = savedToDeviceItems.has(item.id);
+
+        // Auto-download to PC if enabled and ready
+        if (isReady && AUTO_DOWNLOAD && !isSaved) {
+            triggerSaveToDevice(item);
+        }
+
+        // Resolve absolute downloadable link for manual download
+        let downloadUrl = item.downloadUrl;
+        if (!downloadUrl || !downloadUrl.startsWith('http')) {
+            const tokenParam = item.downloadToken ? `&token=${encodeURIComponent(item.downloadToken)}` : '';
+            downloadUrl = `${SERVER_URL}/api/download-file/${item.id}?apiKey=${encodeURIComponent(API_KEY)}${tokenParam}`;
+        } else if (!downloadUrl.includes('apiKey=') && API_KEY) {
+            downloadUrl += (downloadUrl.includes('?') ? '&' : '?') + `apiKey=${encodeURIComponent(API_KEY)}`;
+        }
+
+        const card = document.createElement('div');
+        card.className = `queue-item ${item.status}`;
 
         card.innerHTML = `
-            <img class="item-thumb" src="${thumbSrc}" alt="thumb" onerror="this.src='icons/icon48.png'">
+            <div class="item-thumb-wrapper">
+                <img class="item-thumb" src="${escapeHtml(thumbSrc)}" alt="thumb" onerror="this.src='icons/icon48.png'">
+                <span class="item-badge-bitrate">${escapeHtml(item.bitrate || '320k')}</span>
+            </div>
+            
             <div class="item-details">
                 <div class="item-title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</div>
-                <div class="item-meta">
-                    <span>${escapeHtml(item.channel || 'YouTube')}</span>
-                    <span class="status-tag ${item.status}">${stageLabel}</span>
-                </div>
-                ${item.status !== 'completed' && item.status !== 'error' ? `
+                <div class="item-channel">${escapeHtml(item.channel || 'YouTube')}</div>
+
+                <!-- Multi-stage Dynamic Progress Bar -->
+                <div class="progress-section">
+                    <div class="progress-header-row">
+                        <span class="stage-desc">
+                            <span>${stageInfo.icon}</span>
+                            <span>${escapeHtml(stageInfo.text)}</span>
+                        </span>
+                        <span class="percent-tag ${isReady ? 'completed' : ''}">${stageInfo.percent}%</span>
+                    </div>
+
                     <div class="progress-bar-bg">
-                        <div class="progress-bar-fill" style="width: ${progress}%"></div>
+                        <div class="progress-bar-fill ${stageInfo.animating ? 'animating' : ''} ${isReady ? 'ready' : ''}" 
+                             style="width: ${stageInfo.percent}%"></div>
+                    </div>
+                </div>
+
+                <!-- Action Button for End User Device Download & Temp Manual Link -->
+                ${isReady ? `
+                    <div class="download-ready-box">
+                        ${isSaved ? `
+                            <span class="badge-saved">💾 Saved to PC (${formatBytes(item.fileSize)}) ✓</span>
+                        ` : `
+                            <button class="btn-save-device" data-id="${item.id}" title="Save file directly to PC Downloads folder">
+                                ⬇️ Save to PC (${formatBytes(item.fileSize)})
+                            </button>
+                        `}
+                        <a class="btn-temp-link" href="${escapeHtml(downloadUrl)}" target="_blank" download="${escapeHtml(item.filename || 'audio.mp3')}" title="Open temporary direct download link in browser">
+                            🔗 Temp Link
+                        </a>
+                        <button class="btn-copy-temp" data-url="${escapeHtml(downloadUrl)}" title="Copy direct temporary download link to clipboard">
+                            📋 Copy
+                        </button>
+                        <span class="temp-link-note">⏱️ Temp link valid for 30 minutes</span>
                     </div>
                 ` : ''}
-                ${item.error ? `<div style="font-size: 10px; color: var(--danger); margin-top:2px;">${escapeHtml(item.error)}</div>` : ''}
             </div>
+
             <div class="item-actions">
                 ${item.status === 'error' ? `
                     <button class="btn-icon btn-retry" data-id="${item.id}" title="Retry">🔄</button>
@@ -260,12 +576,34 @@ function renderQueue(state) {
             </div>
         `;
 
-        // Event listeners for item actions
+        // Save to PC button handler
+        const btnSave = card.querySelector('.btn-save-device');
+        if (btnSave) {
+            btnSave.addEventListener('click', () => {
+                triggerSaveToDevice(item, true);
+            });
+        }
+
+        // Copy Temp Link handler
+        const btnCopy = card.querySelector('.btn-copy-temp');
+        if (btnCopy) {
+            btnCopy.addEventListener('click', (e) => {
+                e.preventDefault();
+                const url = btnCopy.getAttribute('data-url');
+                navigator.clipboard.writeText(url).then(() => {
+                    btnCopy.textContent = 'Copied! ✓';
+                    setTimeout(() => { btnCopy.textContent = '📋 Copy'; }, 2000);
+                });
+            });
+        }
+
+        // Remove item handler
         const btnRemove = card.querySelector('.btn-remove');
         if (btnRemove) {
             btnRemove.addEventListener('click', () => removeItem(item.id));
         }
 
+        // Retry item handler
         const btnRetry = card.querySelector('.btn-retry');
         if (btnRetry) {
             btnRetry.addEventListener('click', () => retryItem(item.id));
@@ -275,13 +613,23 @@ function renderQueue(state) {
     });
 }
 
-function getStageLabel(status, stage) {
-    if (status === 'decoding_ffmpeg') return 'FFmpeg MP3...';
-    if (status === 'tagging') return 'ID3 Tagging...';
-    if (status === 'downloading') return 'Downloading Audio...';
-    if (status === 'completed') return 'Done (MP3)';
-    if (status === 'error') return 'Failed';
-    return 'Queued';
+/**
+ * Trigger saving converted MP3 to end user's PC device
+ */
+function triggerSaveToDevice(item, explicitClick = false) {
+    savedToDeviceItems.add(item.id);
+    chrome.runtime.sendMessage({
+        action: 'TRIGGER_DEVICE_DOWNLOAD',
+        item: item,
+        explicitClick: explicitClick
+    }, (res) => {
+        if (res && res.success) {
+            refreshQueueNow();
+        } else if (res && res.error) {
+            savedToDeviceItems.delete(item.id);
+            console.error('Device download error:', res.error);
+        }
+    });
 }
 
 function renderEmptyState(customMsg) {
@@ -297,7 +645,8 @@ function renderEmptyState(customMsg) {
 
 async function removeItem(id) {
     try {
-        await apiFetch(`${SERVER_URL}/api/queue/${id}`, { method: 'DELETE' });
+        await apiFetch(`/api/queue/${id}`, { method: 'DELETE' });
+        refreshQueueNow();
     } catch (err) {
         console.error('Remove failed:', err.message);
     }
@@ -305,7 +654,9 @@ async function removeItem(id) {
 
 async function retryItem(id) {
     try {
-        await apiFetch(`${SERVER_URL}/api/queue/retry/${id}`, { method: 'POST' });
+        await apiFetch(`/api/queue/retry/${id}`, { method: 'POST' });
+        chrome.runtime.sendMessage({ action: 'START_POLLING' });
+        refreshQueueNow();
     } catch (err) {
         console.error('Retry failed:', err.message);
     }
@@ -313,7 +664,7 @@ async function retryItem(id) {
 
 function escapeHtml(text) {
     if (!text) return '';
-    return text.replace(/[&<>"']/g, function (m) {
+    return String(text).replace(/[&<>"']/g, function (m) {
         return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[m];
     });
 }

@@ -7,7 +7,7 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "prod": "NODE_ENV=production node server.js",
+    "prod": "node server.js --production",
     "pm2:start": "pm2 start ecosystem.config.js",
     "pm2:stop": "pm2 stop youtube-mp3-server",
     "pm2:restart": "pm2 restart youtube-mp3-server",

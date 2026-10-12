@@ -14,14 +14,56 @@
                 <div class="logo-icon">🎧</div>
                 <div>
                     <h1>YT to MP3 Engine</h1>
-                    <span class="sub-title">FFmpeg Local Audio Decoder</span>
+                    <span class="sub-title">Coolify Ubuntu Server • Linux FFmpeg</span>
                 </div>
             </div>
-            <div id="server-status" class="status-badge offline">
-                <span class="status-dot"></span>
-                <span id="status-text">Connecting...</span>
+            <div class="header-right">
+                <div id="server-status" class="status-badge offline" title="Click to open Server Settings">
+                    <span class="status-dot"></span>
+                    <span id="status-text">Connecting...</span>
+                </div>
+                <button id="btn-toggle-settings" class="btn-icon header-settings-btn" title="Server & Download Settings">
+                    ⚙️
+                </button>
             </div>
         </header>
+
+        <!-- Collapsible Server Settings Drawer -->
+        <section id="settings-panel" class="settings-panel hidden">
+            <div class="settings-header">
+                <h3>⚙️ Server & Coolify Settings</h3>
+                <button id="btn-close-settings" class="btn-icon">✕</button>
+            </div>
+            <div class="settings-form">
+                <div class="form-group">
+                    <label for="setting-server-url">Server Address (Coolify / Ubuntu):</label>
+                    <input type="text" id="setting-server-url" placeholder="https://ytmp3.yourdomain.com or http://ip:3500" spellcheck="false">
+                    <span class="form-hint">Address where your Node.js FFmpeg server is hosted via Coolify</span>
+                </div>
+
+                <div class="form-group">
+                    <label for="setting-api-key">API Key (Matches server .env):</label>
+                    <div class="input-with-action">
+                        <input type="password" id="setting-api-key" placeholder="Enter API Key" spellcheck="false">
+                        <button type="button" id="btn-toggle-key-visibility" class="btn-icon-inside" title="Show/Hide">👁️</button>
+                    </div>
+                </div>
+
+                <div class="form-group toggle-group">
+                    <label class="toggle-switch-label" for="setting-auto-download">
+                        <input type="checkbox" id="setting-auto-download" checked>
+                        <span class="toggle-slider"></span>
+                        <span class="toggle-text">Auto-save MP3 to PC when ready</span>
+                    </label>
+                    <span class="form-hint">Downloads automatically to your browser's Downloads folder</span>
+                </div>
+
+                <div class="settings-actions">
+                    <button id="btn-save-settings" class="btn-primary">Save & Connect</button>
+                    <span id="settings-status-msg" class="settings-status-msg"></span>
+                </div>
+            </div>
+        </section>
 
         <!-- Main Controls -->
         <section class="control-panel">
@@ -79,7 +121,10 @@
 
         <!-- Footer -->
         <footer class="app-footer">
-            <span>Destination: <code>Downloads/YouTube_MP3s</code></span>
+            <div class="footer-row">
+                <span>📁 Destination: <code>Downloads/YouTube_MP3s</code></span>
+                <span class="server-temp-note">⚡ Server: Temp storage</span>
+            </div>
         </footer>
     </div>
 

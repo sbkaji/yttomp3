@@ -42,9 +42,14 @@
     flex-shrink: 0 !important;
 }
 
-.yt-mp3-download-btn.loading {
-    opacity: 0.85 !important;
-    pointer-events: none !important;
+.yt-mp3-download-btn.downloading {
+    background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) !important;
+    box-shadow: 0 0 12px rgba(99, 102, 241, 0.6) !important;
+}
+
+.yt-mp3-download-btn.ready {
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    box-shadow: 0 3px 12px rgba(16, 185, 129, 0.4) !important;
 }
 
 .yt-mp3-spinner {
@@ -56,12 +61,12 @@
     to { transform: rotate(360deg); }
 }
 
-/* Injected Toast Notification */
+/* Injected Floating Toast Notification */
 .yt-mp3-toast {
     position: fixed !important;
     bottom: 24px !important;
     right: 24px !important;
-    background: rgba(15, 23, 42, 0.94) !important;
+    background: rgba(15, 23, 42, 0.96) !important;
     backdrop-filter: blur(12px) !important;
     border: 1px solid rgba(99, 102, 241, 0.4) !important;
     color: #f8fafc !important;
@@ -87,6 +92,220 @@
         transform: translateY(0);
         opacity: 1;
     }
+}
+
+/* Floating Live Progress Dock Widget */
+#yt-mp3-progress-dock {
+    position: fixed !important;
+    bottom: 24px !important;
+    right: 24px !important;
+    width: 350px !important;
+    background: rgba(15, 23, 42, 0.96) !important;
+    backdrop-filter: blur(16px) !important;
+    border: 1px solid rgba(99, 102, 241, 0.35) !important;
+    border-radius: 14px !important;
+    box-shadow: 0 14px 40px rgba(0, 0, 0, 0.65), 0 0 20px rgba(99, 102, 241, 0.2) !important;
+    color: #f8fafc !important;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+    padding: 14px !important;
+    z-index: 9999999 !important;
+    box-sizing: border-box !important;
+    animation: yt-mp3-slide-in 0.3s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 10px !important;
+}
+
+#yt-mp3-progress-dock * {
+    box-sizing: border-box !important;
+}
+
+.dock-header {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+}
+
+.dock-brand {
+    display: flex !important;
+    align-items: center !important;
+    gap: 6px !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    color: #cbd5e1 !important;
+}
+
+.dock-brand-icon {
+    font-size: 14px !important;
+}
+
+.dock-close-btn {
+    background: transparent !important;
+    border: none !important;
+    color: #94a3b8 !important;
+    font-size: 14px !important;
+    cursor: pointer !important;
+    padding: 2px 6px !important;
+    border-radius: 4px !important;
+    line-height: 1 !important;
+    transition: all 0.15s ease !important;
+}
+
+.dock-close-btn:hover {
+    color: #ffffff !important;
+    background: rgba(255, 255, 255, 0.1) !important;
+}
+
+.dock-title {
+    font-size: 13px !important;
+    font-weight: 600 !important;
+    color: #f8fafc !important;
+    white-space: nowrap !important;
+    overflow: hidden !important;
+    text-overflow: ellipsis !important;
+    line-height: 1.3 !important;
+}
+
+.dock-status-row {
+    display: flex !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    font-size: 11px !important;
+    color: #94a3b8 !important;
+}
+
+.dock-stage-text {
+    display: flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+    font-weight: 500 !important;
+}
+
+.dock-percent {
+    font-weight: 700 !important;
+    color: #818cf8 !important;
+    font-size: 12px !important;
+}
+
+.dock-percent.complete {
+    color: #10b981 !important;
+}
+
+/* Progress bar in Dock */
+.dock-bar-bg {
+    width: 100% !important;
+    height: 7px !important;
+    background: rgba(255, 255, 255, 0.1) !important;
+    border-radius: 4px !important;
+    overflow: hidden !important;
+    position: relative !important;
+}
+
+.dock-bar-fill {
+    height: 100% !important;
+    width: 0% !important;
+    background: linear-gradient(90deg, #6366f1, #a855f7) !important;
+    border-radius: 4px !important;
+    transition: width 0.35s ease !important;
+    position: relative !important;
+}
+
+.dock-bar-fill.animating::after {
+    content: '' !important;
+    position: absolute !important;
+    top: 0 !important; left: 0 !important; bottom: 0 !important; right: 0 !important;
+    background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.4), transparent) !important;
+    animation: dock-shimmer 1.5s infinite !important;
+}
+
+@keyframes dock-shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+.dock-bar-fill.ready {
+    background: linear-gradient(90deg, #10b981, #059669) !important;
+    box-shadow: 0 0 10px rgba(16, 185, 129, 0.4) !important;
+}
+
+/* Actions in Dock (Manual Link & Copy) */
+.dock-actions {
+    display: flex !important;
+    flex-direction: column !important;
+    gap: 8px !important;
+    margin-top: 2px !important;
+    padding-top: 6px !important;
+    border-top: 1px solid rgba(255, 255, 255, 0.08) !important;
+}
+
+.dock-saved-badge {
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    color: #10b981 !important;
+    background: rgba(16, 185, 129, 0.12) !important;
+    border: 1px solid rgba(16, 185, 129, 0.3) !important;
+    border-radius: 6px !important;
+    padding: 4px 8px !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    gap: 5px !important;
+}
+
+.dock-buttons-row {
+    display: flex !important;
+    align-items: center !important;
+    gap: 8px !important;
+}
+
+.btn-dock-download {
+    flex: 1 !important;
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 6px !important;
+    background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 8px !important;
+    padding: 7px 12px !important;
+    font-size: 12px !important;
+    font-weight: 700 !important;
+    cursor: pointer !important;
+    text-decoration: none !important;
+    box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3) !important;
+    transition: all 0.2s ease !important;
+}
+
+.btn-dock-download:hover {
+    transform: translateY(-1px) !important;
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.45) !important;
+}
+
+.btn-dock-copy {
+    display: inline-flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    gap: 4px !important;
+    background: rgba(255, 255, 255, 0.08) !important;
+    color: #cbd5e1 !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    border-radius: 8px !important;
+    padding: 7px 10px !important;
+    font-size: 11px !important;
+    font-weight: 600 !important;
+    cursor: pointer !important;
+    transition: all 0.15s ease !important;
+}
+
+.btn-dock-copy:hover {
+    background: rgba(255, 255, 255, 0.14) !important;
+    color: #ffffff !important;
+}
+
+.dock-expiry-note {
+    font-size: 10px !important;
+    color: #64748b !important;
+    text-align: right !important;
 }
 
 /* Hover Download MP3 Button on Video Cards / Thumbnails */
@@ -129,7 +348,7 @@ ytd-rich-grid-slim-media {
     pointer-events: none !important;
 }
 
-/* Show button when hovering thumbnail or when loading/queued */
+/* Show button when hovering thumbnail or when active/loading/queued */
 ytd-thumbnail:hover .yt-mp3-hover-btn,
 a#thumbnail:hover .yt-mp3-hover-btn,
 .ytd-thumbnail:hover .yt-mp3-hover-btn,
@@ -138,7 +357,9 @@ ytd-grid-video-renderer:hover .yt-mp3-hover-btn,
 ytd-reel-item-renderer:hover .yt-mp3-hover-btn,
 ytd-rich-grid-slim-media:hover .yt-mp3-hover-btn,
 .yt-mp3-hover-btn.loading,
-.yt-mp3-hover-btn.queued {
+.yt-mp3-hover-btn.downloading,
+.yt-mp3-hover-btn.queued,
+.yt-mp3-hover-btn.ready {
     opacity: 1 !important;
     transform: scale(1) !important;
     pointer-events: auto !important;
@@ -160,14 +381,14 @@ ytd-rich-grid-slim-media:hover .yt-mp3-hover-btn,
     flex-shrink: 0 !important;
 }
 
-.yt-mp3-hover-btn.loading {
-    opacity: 0.9 !important;
-    pointer-events: none !important;
+.yt-mp3-hover-btn.loading,
+.yt-mp3-hover-btn.downloading {
+    opacity: 0.95 !important;
     background: rgba(15, 23, 42, 0.95) !important;
+    border-color: #6366f1 !important;
 }
 
-.yt-mp3-hover-btn.queued {
+.yt-mp3-hover-btn.ready {
     background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
     border-color: transparent !important;
 }
-

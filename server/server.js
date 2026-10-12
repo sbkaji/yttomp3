@@ -14,19 +14,56 @@ const helmet = require('helmet');
 const compression = require('compression');
 const rateLimit = require('express-rate-limit');
 const morgan = require('morgan');
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const queue = require('./queue');
-const { getVideoInfo, downloadYtDlp } = require('./yt-dlp-helper');
+const history = require('./history');
+const {
+    getVideoInfo,
+    downloadYtDlp,
+    ensureFFmpeg,
+    TEMP_DIR,
+    getYtDlpPath,
+    getFFmpegPath,
+    OS_PLATFORM,
+    OS_ARCH,
+    IS_WIN
+} = require('./yt-dlp-helper');
 
-// ─── Configuration ────────────────────────────────────────────────────────────
-const NODE_ENV = process.env.NODE_ENV || 'development';
+// ─── Configuration & Cross-Platform OS Adaptation ───────────────────────────
+const cliArgs = process.argv.slice(2);
+const isProdCli = cliArgs.includes('--production') || cliArgs.includes('-p');
+const NODE_ENV = isProdCli ? 'production' : (process.env.NODE_ENV || 'development');
 const PORT = parseInt(process.env.PORT, 10) || 3500;
 const HOST = process.env.HOST || '0.0.0.0';
 const API_KEY = process.env.API_KEY || '';
 const PRODUCTION_URL = process.env.PRODUCTION_URL || '';
-const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || path.join(os.homedir(), 'Downloads', 'YouTube_MP3s');
+
+function resolveDefaultDownloadDir() {
+    try {
+        const home = os.homedir();
+        if (home) {
+            return path.join(home, 'Downloads', 'YouTube_MP3s');
+        }
+    } catch (e) {}
+    return path.join(__dirname, 'downloads');
+}
+
+const DOWNLOAD_DIR = process.env.DOWNLOAD_DIR || resolveDefaultDownloadDir();
 const IS_PRODUCTION = NODE_ENV === 'production';
+
+// Ensure required working directories exist with proper OS permissions
+try {
+    if (!fs.existsSync(DOWNLOAD_DIR)) {
+        fs.mkdirSync(DOWNLOAD_DIR, { recursive: true, mode: 0o777 });
+    }
+    if (!fs.existsSync(TEMP_DIR)) {
+        fs.mkdirSync(TEMP_DIR, { recursive: true, mode: 0o777 });
+    }
+} catch (e) {
+    console.warn('[Directory Init Warning]:', e.message);
+}
 
 const app = express();
 let server = null;
@@ -54,19 +91,28 @@ if (IS_PRODUCTION) {
 }
 
 // ─── CORS Configuration ──────────────────────────────────────────────────────
+const configuredOrigins = (process.env.ALLOWED_ORIGINS || '')
+    .split(',')
+    .map(s => s.trim().replace(/\/+$/, ''))
+    .filter(Boolean);
+
 const ALLOWED_ORIGINS = [
-    'chrome-extension://*',  // All chrome extensions in dev
+    'https://www.youtube.com',
+    'https://m.youtube.com',
+    ...configuredOrigins
 ];
 
 // Add production URL to allowed origins
 if (PRODUCTION_URL) {
-    ALLOWED_ORIGINS.push(PRODUCTION_URL);
+    ALLOWED_ORIGINS.push(PRODUCTION_URL.replace(/\/+$/, ''));
 }
 
-// In development, also allow localhost
-if (!IS_PRODUCTION) {
+// In development or if ALLOW_ALL_ORIGINS is enabled, allow local dev hosts
+if (!IS_PRODUCTION || process.env.ALLOW_ALL_ORIGINS === 'true') {
     ALLOWED_ORIGINS.push('http://localhost:3500');
     ALLOWED_ORIGINS.push('http://127.0.0.1:3500');
+    ALLOWED_ORIGINS.push(`http://localhost:${PORT}`);
+    ALLOWED_ORIGINS.push(`http://127.0.0.1:${PORT}`);
 }
 
 app.use(cors({
@@ -79,31 +125,68 @@ app.use(cors({
             return callback(null, true);
         }
 
+        // Allow YouTube web origins for content script communication
+        if (origin.includes('youtube.com')) {
+            return callback(null, true);
+        }
+
         // Check against allowed origins list
         if (ALLOWED_ORIGINS.includes(origin)) {
             return callback(null, true);
         }
 
-        // In development, be more permissive
-        if (!IS_PRODUCTION) {
+        // In development, be permissive
+        if (!IS_PRODUCTION || process.env.ALLOW_ALL_ORIGINS === 'true') {
             return callback(null, true);
         }
 
         callback(new Error(`CORS: Origin ${origin} not allowed`));
     },
     methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Admin-Key'],
     credentials: true
 }));
+
+// Clean up any stale orphaned temp files on server startup
+try {
+    if (fs.existsSync(TEMP_DIR)) {
+        const staleFiles = fs.readdirSync(TEMP_DIR);
+        let cleanedCount = 0;
+        for (const f of staleFiles) {
+            try {
+                fs.unlinkSync(path.join(TEMP_DIR, f));
+                cleanedCount++;
+            } catch (e) {}
+        }
+        if (cleanedCount > 0) {
+            console.log(`[Storage Init] Reclaimed storage: cleaned ${cleanedCount} orphaned temporary file(s).`);
+        }
+    }
+} catch (e) {
+    console.warn('[Storage Init Warning]:', e.message);
+}
 
 // ─── Body Parser with Size Limits ────────────────────────────────────────────
 app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: false, limit: '1mb' }));
 
-// ─── Rate Limiting ───────────────────────────────────────────────────────────
+// ─── Rate Limiting & DoS Protection ──────────────────────────────────────────
+// 1) Dedicated submission limiter for resource-heavy conversions
+const submissionLimiter = rateLimit({
+    windowMs: 60 * 1000, // 1 minute
+    max: parseInt(process.env.RATE_LIMIT_SUBMISSIONS_PER_MIN, 10) || 30, // 30 submissions per min per IP
+    standardHeaders: true,
+    legacyHeaders: false,
+    message: { error: 'Too many conversion requests. Please wait a minute before submitting more.' }
+});
+
+app.use('/api/download', submissionLimiter);
+app.use('/api/download-batch', submissionLimiter);
+
+// 2) General API limiter for polling and status checks
 const limiter = rateLimit({
     windowMs: parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000,  // 15 min
-    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 100,               // 100 requests per window
+    max: parseInt(process.env.RATE_LIMIT_MAX_REQUESTS, 10) || 300,               // 300 requests per window
     standardHeaders: true,
     legacyHeaders: false,
     message: { error: 'Too many requests. Please try again later.' },
@@ -114,6 +197,16 @@ app.use('/api/', limiter);
 
 // ─── API Key Authentication Middleware ────────────────────────────────────────
 function authenticateApiKey(req, res, next) {
+    // Allow download-file endpoint with valid temporary download token
+    if (req.path.startsWith('/download-file/')) {
+        const id = req.path.replace('/download-file/', '').split('/')[0].split('?')[0];
+        const item = queue.getItem(id);
+        const token = (req.query.token || '').trim();
+        if (item && token && item.downloadToken && token === item.downloadToken) {
+            return next();
+        }
+    }
+
     // Skip auth if no API key is configured (dev/local mode)
     if (!API_KEY || API_KEY === 'CHANGE_ME_TO_A_RANDOM_64_CHAR_HEX_STRING') {
         if (IS_PRODUCTION) {
@@ -122,16 +215,17 @@ function authenticateApiKey(req, res, next) {
         return next();
     }
 
-    const providedKey = req.headers['x-api-key'] || req.query.apiKey;
+    const rawKey = req.headers['x-api-key'] || req.headers['x-admin-key'] || req.query.apiKey;
+    const providedKey = rawKey ? String(rawKey).trim() : '';
 
     if (!providedKey) {
-        return res.status(401).json({ error: 'Missing API key. Include X-API-Key header.' });
+        return res.status(401).json({ error: 'Missing API key. Include X-API-Key header or valid ?token parameter.' });
     }
 
     // Constant-time comparison to prevent timing attacks
     const crypto = require('crypto');
     const keyBuffer = Buffer.from(API_KEY);
-    const providedBuffer = Buffer.from(String(providedKey));
+    const providedBuffer = Buffer.from(providedKey);
 
     if (keyBuffer.length !== providedBuffer.length || !crypto.timingSafeEqual(keyBuffer, providedBuffer)) {
         return res.status(403).json({ error: 'Invalid API key.' });
@@ -155,6 +249,21 @@ function isValidYouTubeUrl(url) {
 function sanitizeBitrate(bitrate) {
     if (VALID_BITRATES.includes(bitrate)) return bitrate;
     return '320k';
+}
+
+function extractClientMeta(req) {
+    const rawIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
+    const clientIp = String(rawIp).split(',')[0].trim().replace(/^::ffff:/, '');
+    const userAgent = req.headers['user-agent'] || 'Unknown';
+    let clientOrigin = req.headers['origin'] || req.headers['referer'] || '';
+    if (!clientOrigin) {
+        if (userAgent.includes('Chrome') && !userAgent.includes('Edg')) {
+            clientOrigin = 'Chrome Extension';
+        } else {
+            clientOrigin = 'Web / API Client';
+        }
+    }
+    return { clientIp, userAgent, clientOrigin };
 }
 
 // ─── Server-Sent Events (SSE) ────────────────────────────────────────────────
@@ -183,15 +292,39 @@ queue.subscribe(({ event, data, state }) => {
  * Health check endpoint (no auth required)
  */
 app.get('/health', (req, res) => {
+    const storage = queue.getStorageUsage();
+    const mem = process.memoryUsage();
+
     res.json({
         status: 'online',
         server: 'YouTube MP3 FFmpeg Engine',
         version: '1.0.0',
         environment: NODE_ENV,
-        downloadFolder: DOWNLOAD_DIR,
+        platform: OS_PLATFORM,
+        arch: OS_ARCH,
+        cpuCores: os.cpus() ? os.cpus().length : 1,
+        binaries: {
+            ytDlp: getYtDlpPath(),
+            ffmpeg: getFFmpegPath()
+        },
+        storage: {
+            tempDir: TEMP_DIR,
+            usedMb: storage.usedMb,
+            quotaMb: storage.quotaMb,
+            filesHeld: storage.filesCount,
+            downloadDir: DOWNLOAD_DIR
+        },
+        queue: {
+            activeDownloads: queue.activeCount,
+            maxConcurrency: queue.maxConcurrency,
+            totalItems: queue.queue.length
+        },
         uptime: Math.floor(process.uptime()),
         sseClients: sseClients.length,
-        memoryUsage: Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + 'MB',
+        memory: {
+            heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+            rssMb: Math.round(mem.rss / 1024 / 1024)
+        },
         timestamp: new Date().toISOString()
     });
 });
@@ -271,8 +404,12 @@ app.post('/api/download', async (req, res) => {
     }
 
     try {
-        const item = await queue.add({ url: url.trim(), bitrate: sanitizeBitrate(bitrate) });
-        res.json({ success: true, item, queueState: queue.getSnapshot() });
+        const clientMeta = extractClientMeta(req);
+        const item = await queue.add({ url: url.trim(), bitrate: sanitizeBitrate(bitrate), clientMeta });
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+        const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
+        const baseUrl = `${protocol}://${host}`;
+        res.json({ success: true, item, queueState: queue.getSnapshot(baseUrl) });
     } catch (err) {
         console.error('[API /download Error]:', err.message);
         res.status(500).json({ error: 'Failed to queue download. Please try again.' });
@@ -302,12 +439,16 @@ app.post('/api/download-batch', async (req, res) => {
     }
 
     try {
-        const items = await queue.addBatch(validUrls.map(u => u.trim()), sanitizeBitrate(bitrate));
+        const clientMeta = extractClientMeta(req);
+        const items = await queue.addBatch(validUrls.map(u => u.trim()), sanitizeBitrate(bitrate), clientMeta);
+        const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+        const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
+        const baseUrl = `${protocol}://${host}`;
         res.json({
             success: true,
             count: items.length,
             skippedInvalid: invalidCount,
-            queueState: queue.getSnapshot()
+            queueState: queue.getSnapshot(baseUrl)
         });
     } catch (err) {
         console.error('[API /download-batch Error]:', err.message);
@@ -319,7 +460,10 @@ app.post('/api/download-batch', async (req, res) => {
  * Get current Queue snapshot
  */
 app.get('/api/queue', (req, res) => {
-    res.json(queue.getSnapshot());
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
+    const baseUrl = `${protocol}://${host}`;
+    res.json(queue.getSnapshot(baseUrl));
 });
 
 /**
@@ -345,7 +489,10 @@ app.delete('/api/queue/:id', (req, res) => {
  */
 app.post('/api/queue/clear-completed', (req, res) => {
     queue.clearCompleted();
-    res.json({ success: true, queueState: queue.getSnapshot() });
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol || 'http';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'localhost:3500';
+    const baseUrl = `${protocol}://${host}`;
+    res.json({ success: true, queueState: queue.getSnapshot(baseUrl) });
 });
 
 /**
@@ -381,6 +528,157 @@ app.post('/api/settings/concurrency', (req, res) => {
     res.json({ success: true, maxConcurrency: queue.maxConcurrency });
 });
 
+/**
+ * Stream converted MP3 file to client for download to user's device.
+ * Server holds files temporarily in TEMP_DIR (preserved for 30 minutes for manual & re-downloads).
+ * Supports token auth via ?token= or API key via header/query param.
+ */
+app.get('/api/download-file/:id', (req, res) => {
+    const { id } = req.params;
+
+    if (!id || typeof id !== 'string') {
+        return res.status(400).json({ error: 'Invalid item ID.' });
+    }
+
+    const item = queue.getItem(id);
+    if (!item) {
+        return res.status(404).json({ error: 'Download item not found or expired.' });
+    }
+
+    if (!item.filePath || !fs.existsSync(item.filePath)) {
+        return res.status(404).json({ error: 'Temporary file is no longer available on server.' });
+    }
+
+    // Preserve filename safely for Windows & Linux
+    const safeFilename = (item.filename || `${item.title || 'audio'}.mp3`).replace(/[<>:"/\\|?*]/g, '_');
+
+    console.log(`[Stream Download] Sending file to client: ${safeFilename}`);
+
+    // Stream download with Content-Disposition
+    res.download(item.filePath, safeFilename, (err) => {
+        if (err) {
+            if (!res.headersSent) {
+                console.error(`[Download Error ${id}]:`, err.message);
+                res.status(500).json({ error: 'Failed to stream download.' });
+            }
+        } else {
+            console.log(`[Download Complete] Successfully sent ${safeFilename}`);
+            // Record download in audit log
+            history.recordFileDownloaded(id, extractClientMeta(req));
+            // Keep the file active on server for up to 30 mins so user can use the manual temp link anytime
+        }
+    });
+});
+
+// ─── Admin & Server Panel API Endpoints ─────────────────────────────────────
+
+/**
+ * Validate admin authentication
+ */
+app.get('/api/admin/auth-check', (req, res) => {
+    res.json({
+        authenticated: true,
+        isProduction: IS_PRODUCTION,
+        configured: Boolean(API_KEY && API_KEY !== 'CHANGE_ME_TO_A_RANDOM_64_CHAR_HEX_STRING')
+    });
+});
+
+/**
+ * Get comprehensive server health, stats, and download metrics
+ */
+app.get('/api/admin/stats', (req, res) => {
+    let tempFilesHeld = 0;
+    let tempDirSizeBytes = 0;
+
+    try {
+        if (fs.existsSync(TEMP_DIR)) {
+            const files = fs.readdirSync(TEMP_DIR);
+            tempFilesHeld = files.length;
+            for (const f of files) {
+                try {
+                    const st = fs.statSync(path.join(TEMP_DIR, f));
+                    tempDirSizeBytes += st.size;
+                } catch (e) {}
+            }
+        }
+    } catch (e) {}
+
+    const mem = process.memoryUsage();
+
+    res.json({
+        server: {
+            status: 'online',
+            name: 'YouTube MP3 FFmpeg Engine',
+            version: '1.0.0',
+            environment: NODE_ENV,
+            uptimeSec: Math.floor(process.uptime()),
+            timestamp: new Date().toISOString(),
+            nodeVersion: process.version,
+            platform: process.platform,
+            arch: process.arch,
+            cpuCores: os.cpus().length,
+            memory: {
+                heapUsedMb: Math.round(mem.heapUsed / 1024 / 1024),
+                rssMb: Math.round(mem.rss / 1024 / 1024),
+                systemFreeMb: Math.round(os.freemem() / 1024 / 1024),
+                systemTotalMb: Math.round(os.totalmem() / 1024 / 1024)
+            },
+            tempStorage: {
+                path: TEMP_DIR,
+                filesHeld: tempFilesHeld,
+                sizeMb: (tempDirSizeBytes / (1024 * 1024)).toFixed(2)
+            },
+            sseClients: sseClients.length
+        },
+        downloadStats: history.getStats(),
+        queueSnapshot: queue.getSnapshot()
+    });
+});
+
+/**
+ * Get download history audit log (What, Where, When, How)
+ */
+app.get('/api/admin/history', (req, res) => {
+    const { search = '', status = '', limit = 50, page = 1 } = req.query;
+    const result = history.getHistory({ search, status, limit, page });
+    res.json(result);
+});
+
+/**
+ * Clear audit log history
+ */
+app.post('/api/admin/clear-history', (req, res) => {
+    history.clear();
+    res.json({ success: true, message: 'Download audit history cleared' });
+});
+
+/**
+ * Force purge temporary storage
+ */
+app.post('/api/admin/purge-temp', (req, res) => {
+    let purged = 0;
+    try {
+        if (fs.existsSync(TEMP_DIR)) {
+            const files = fs.readdirSync(TEMP_DIR);
+            for (const f of files) {
+                try {
+                    fs.unlinkSync(path.join(TEMP_DIR, f));
+                    purged++;
+                } catch (e) {}
+            }
+        }
+    } catch (e) {}
+    res.json({ success: true, purgedCount: purged });
+});
+
+// ─── Web Dashboard & Static Files ──────────────────────────────────────────
+const PUBLIC_DIR = path.join(__dirname, 'public');
+app.use(express.static(PUBLIC_DIR));
+
+app.get(['/', '/dashboard', '/admin'], (req, res) => {
+    res.sendFile(path.join(PUBLIC_DIR, 'index.html'));
+});
+
 // ─── 404 Handler ─────────────────────────────────────────────────────────────
 app.use((req, res) => {
     res.status(404).json({ error: 'Endpoint not found.' });
@@ -397,9 +695,19 @@ app.use((err, req, res, _next) => {
     res.status(500).json({ error: IS_PRODUCTION ? 'Internal server error.' : err.message });
 });
 
+// Periodic background cleanup of temporary files (runs every 5 minutes, deletes >20min old)
+const cleanupTimer = setInterval(() => {
+    try {
+        queue.cleanupStaleTempFiles(20 * 60 * 1000);
+    } catch (e) {
+        console.error('[Periodic Temp Cleanup Error]:', e.message);
+    }
+}, 5 * 60 * 1000);
+
 // ─── Graceful Shutdown ───────────────────────────────────────────────────────
 function gracefulShutdown(signal) {
     console.log(`\n[Shutdown] Received ${signal}. Closing gracefully...`);
+    clearInterval(cleanupTimer);
 
     // Close all SSE connections
     sseClients.forEach(client => {
@@ -441,11 +749,15 @@ process.on('uncaughtException', (err) => {
 
 // ─── Start Server ────────────────────────────────────────────────────────────
 server = app.listen(PORT, HOST, () => {
+    const osPretty = IS_WIN ? 'Windows' : (OS_PLATFORM === 'linux' ? 'Linux' : OS_PLATFORM);
     console.log(`====================================================`);
     console.log(` 🎧 YouTube to MP3 FFmpeg Engine Server`);
+    console.log(` 💻 Platform:     ${osPretty} (${OS_ARCH})`);
     console.log(` 🚀 Environment:  ${NODE_ENV}`);
     console.log(` 🌐 Listening:    http://${HOST}:${PORT}`);
     console.log(` 📁 Download Dir: ${DOWNLOAD_DIR}`);
+    console.log(` 📦 yt-dlp:       ${getYtDlpPath()}`);
+    console.log(` 🎞️  FFmpeg:       ${getFFmpegPath()}`);
     console.log(` 🔑 API Key:      ${API_KEY && API_KEY !== 'CHANGE_ME_TO_A_RANDOM_64_CHAR_HEX_STRING' ? 'Configured ✓' : 'NOT SET ⚠️'}`);
     console.log(` 🛡️  Rate Limit:   ${process.env.RATE_LIMIT_MAX_REQUESTS || 100} req / ${Math.round((parseInt(process.env.RATE_LIMIT_WINDOW_MS, 10) || 900000) / 60000)}min`);
     console.log(`====================================================`);
